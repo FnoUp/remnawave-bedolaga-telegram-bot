@@ -462,7 +462,7 @@ async def handle_successful_topup_with_cart(user_id: int, amount_kopeks: int, bo
 
 
 @error_handler
-async def request_support_topup(callback: types.CallbackQuery, db_user: User):
+async def request_support_topup(callback: types.CallbackQuery, db_user: User, state: FSMContext):
     texts = get_texts(db_user.language)
 
     if not settings.is_support_topup_enabled():
@@ -475,39 +475,286 @@ async def request_support_topup(callback: types.CallbackQuery, db_user: User):
         )
         return
 
-    user_id_display = db_user.telegram_id or db_user.email or f'#{db_user.id}'
-    support_text = f"""
-🛠️ <b>Пополнение через поддержку</b>
+    await state.set_state(BalanceStates.waiting_for_support_request)
+    await callback.message.edit_text(
+        texts.t(
+            'SUPPORT_TOPUP_ENTER_AMOUNT',
+            '🛠️ <b>Пополнение через поддержку</b>\n\n'
+            'Введите сумму пополнения в рублях (например: <code>500</code>).\n\n'
+            'После отправки будет создана заявка — поддержка свяжется с вами '
+            'и подтвердит зачисление.',
+        ),
+        reply_markup=get_back_keyboard(db_user.language, callback_data='balance_topup'),
+        parse_mode='HTML',
+    )
+    await callback.answer()
 
-Для пополнения баланса обратитесь в техподдержку:
-{settings.get_support_contact_display_html()}
 
-Укажите:
-• ID: {user_id_display}
-• Сумму пополнения
-• Способ оплаты
+@error_handler
+async def process_support_topup_amount(
+    message: types.Message, db_user: User, state: FSMContext, db: AsyncSession
+):
+    """Принимает сумму, создаёт тикет + заявку и уведомляет админов с кнопками."""
+    texts = get_texts(db_user.language)
 
-⏰ Время обработки: 1-24 часа
+    if not message.text:
+        await message.answer(texts.INVALID_AMOUNT, reply_markup=get_back_keyboard(db_user.language))
+        return
 
-<b>Доступные способы:</b>
-• Криптовалюта
-• Переводы между банками
-• Другие платежные системы
-"""
+    try:
+        amount_rubles = float(message.text.strip().replace(',', '.'))
+    except ValueError:
+        await message.answer(
+            texts.INVALID_AMOUNT,
+            reply_markup=get_back_keyboard(db_user.language, callback_data='balance_topup'),
+        )
+        return
+
+    if amount_rubles < 1:
+        await message.answer(
+            texts.t('SUPPORT_TOPUP_MIN_AMOUNT', 'Минимальная сумма пополнения: 1 ₽'),
+            reply_markup=get_back_keyboard(db_user.language, callback_data='balance_topup'),
+        )
+        return
+
+    amount_kopeks = int(round(amount_rubles * 100))
+    await state.clear()
+
+    await _create_support_payment_request(
+        bot=message.bot,
+        db=db,
+        db_user=db_user,
+        amount_kopeks=amount_kopeks,
+        request_type='balance',
+        payload=None,
+    )
+
+    await message.answer(
+        texts.t(
+            'SUPPORT_TOPUP_REQUEST_CREATED',
+            '✅ <b>Заявка создана</b>\n\n'
+            'Сумма: <b>{amount} ₽</b>\n\n'
+            'Поддержка скоро свяжется с вами для оплаты. После подтверждения '
+            'баланс будет пополнен автоматически.',
+        ).format(amount=f'{amount_kopeks / 100:.0f}'),
+        reply_markup=get_back_keyboard(db_user.language, callback_data='balance_menu'),
+        parse_mode='HTML',
+    )
+
+
+async def _create_support_payment_request(
+    *,
+    bot,
+    db: AsyncSession,
+    db_user: User,
+    amount_kopeks: int,
+    request_type: str,
+    payload: str | None,
+    item_title: str | None = None,
+) -> None:
+    """Создаёт тикет + заявку SupportPaymentRequest и шлёт админам кнопки."""
+    from app.database.crud.support_payment import create_support_payment_request
+    from app.database.crud.ticket import TicketCRUD
+    from app.services.admin_notification_service import AdminNotificationService, NotificationCategory
+
+    amount_display = f'{amount_kopeks / 100:.0f} ₽'
+    username = f'@{db_user.username}' if db_user.username else '—'
+    full_name = (db_user.full_name if getattr(db_user, 'full_name', None) else None) or 'Пользователь'
+
+    if request_type == 'subscription':
+        kind_ru = f'Покупка подписки: {item_title or "подписка"}'
+        ticket_title = f'Оплата через поддержку — подписка ({amount_display})'
+    else:
+        kind_ru = 'Пополнение баланса'
+        ticket_title = f'Оплата через поддержку — баланс ({amount_display})'
+
+    ticket_text = (
+        f'🛠️ Заявка на оплату через поддержку\n\n'
+        f'Тип: {kind_ru}\n'
+        f'Сумма: {amount_display}\n\n'
+        f'Пользователь подтвердит оплату в этом тикете.'
+    )
+
+    ticket = None
+    try:
+        ticket = await TicketCRUD.create_ticket(
+            db,
+            user_id=db_user.id,
+            title=ticket_title,
+            message_text=ticket_text,
+            priority='high',
+        )
+    except Exception as e:
+        logger.error('Не удалось создать тикет для заявки на оплату', error=e)
+
+    request = await create_support_payment_request(
+        db,
+        user_id=db_user.id,
+        amount_kopeks=amount_kopeks,
+        request_type=request_type,
+        ticket_id=ticket.id if ticket else None,
+        payload=payload,
+    )
+
+    ticket_line = f'🎫 Тикет: #{ticket.id}\n' if ticket else ''
+    admin_text = (
+        f'🛠️ <b>ЗАЯВКА НА ОПЛАТУ ЧЕРЕЗ ПОДДЕРЖКУ</b>\n\n'
+        f'👤 <b>Пользователь:</b> {full_name}\n'
+        f'🆔 <b>Telegram ID:</b> <code>{db_user.telegram_id}</code>\n'
+        f'📱 <b>Username:</b> {username}\n'
+        f'{ticket_line}'
+        f'📦 <b>Тип:</b> {kind_ru}\n'
+        f'💰 <b>Сумма:</b> {amount_display}\n'
+        f'🧾 <b>Заявка:</b> #{request.id}\n\n'
+        f'Ответьте пользователю в тикете и нажмите кнопку после оплаты:'
+    )
 
     keyboard = types.InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 types.InlineKeyboardButton(
-                    text='💬 Написать в поддержку', url=settings.get_support_contact_url() or 'https://t.me/'
-                )
-            ],
-            [types.InlineKeyboardButton(text=texts.BACK, callback_data='balance_topup')],
+                    text='✅ Подтвердить', callback_data=f'sup_pay_ok:{request.id}'
+                ),
+                types.InlineKeyboardButton(
+                    text='❌ Отклонить', callback_data=f'sup_pay_no:{request.id}'
+                ),
+            ]
         ]
     )
 
-    await callback.message.edit_text(support_text, reply_markup=keyboard, parse_mode='HTML')
-    await callback.answer()
+    try:
+        admin_service = AdminNotificationService(bot)
+        await admin_service.send_admin_notification(
+            admin_text, reply_markup=keyboard, category=NotificationCategory.TICKETS
+        )
+    except Exception as e:
+        logger.error('Не удалось отправить заявку на оплату админам', error=e)
+
+
+@error_handler
+async def confirm_support_payment(callback: types.CallbackQuery, db: AsyncSession):
+    """Админ подтверждает заявку: зачисляет баланс или активирует подписку."""
+    from app.database.crud.support_payment import (
+        get_support_payment_request,
+        set_support_payment_status,
+    )
+    from app.database.crud.user import add_user_balance, get_user_by_id
+
+    if not settings.is_admin(callback.from_user.id):
+        await callback.answer('Недостаточно прав', show_alert=True)
+        return
+
+    try:
+        request_id = int(callback.data.split(':', 1)[1])
+    except (IndexError, ValueError):
+        await callback.answer('Некорректная заявка', show_alert=True)
+        return
+
+    request = await get_support_payment_request(db, request_id)
+    if not request:
+        await callback.answer('Заявка не найдена', show_alert=True)
+        return
+    if request.status != 'pending':
+        await callback.answer(f'Заявка уже обработана ({request.status})', show_alert=True)
+        return
+
+    user = await get_user_by_id(db, request.user_id)
+    if not user:
+        await callback.answer('Пользователь не найден', show_alert=True)
+        return
+
+    amount_display = f'{request.amount_kopeks / 100:.0f} ₽'
+
+    if request.request_type == 'balance':
+        ok = await add_user_balance(
+            db,
+            user,
+            request.amount_kopeks,
+            description='Пополнение через поддержку',
+            bot=callback.bot,
+        )
+        if not ok:
+            await callback.answer('Ошибка зачисления баланса', show_alert=True)
+            return
+        user_text = (
+            f'✅ <b>Баланс пополнен</b>\n\n'
+            f'Сумма: <b>{amount_display}</b>\n'
+            f'Спасибо за оплату!'
+        )
+    else:
+        # subscription — детали в payload (реализуется на этапе подписок)
+        user_text = (
+            f'✅ <b>Оплата подтверждена</b>\n\n'
+            f'Сумма: <b>{amount_display}</b>'
+        )
+
+    await set_support_payment_status(db, request, 'approved', processed_by=callback.from_user.id)
+
+    if user.telegram_id:
+        try:
+            await callback.bot.send_message(user.telegram_id, user_text, parse_mode='HTML')
+        except Exception as e:
+            logger.error('Не удалось уведомить пользователя о подтверждении', error=e)
+
+    try:
+        await callback.message.edit_text(
+            callback.message.html_text + f'\n\n✅ <b>Подтверждено</b> ({amount_display})',
+            parse_mode='HTML',
+        )
+    except Exception:
+        pass
+    await callback.answer('Заявка подтверждена')
+
+
+@error_handler
+async def reject_support_payment(callback: types.CallbackQuery, db: AsyncSession):
+    """Админ отклоняет заявку на оплату."""
+    from app.database.crud.support_payment import (
+        get_support_payment_request,
+        set_support_payment_status,
+    )
+    from app.database.crud.user import get_user_by_id
+
+    if not settings.is_admin(callback.from_user.id):
+        await callback.answer('Недостаточно прав', show_alert=True)
+        return
+
+    try:
+        request_id = int(callback.data.split(':', 1)[1])
+    except (IndexError, ValueError):
+        await callback.answer('Некорректная заявка', show_alert=True)
+        return
+
+    request = await get_support_payment_request(db, request_id)
+    if not request:
+        await callback.answer('Заявка не найдена', show_alert=True)
+        return
+    if request.status != 'pending':
+        await callback.answer(f'Заявка уже обработана ({request.status})', show_alert=True)
+        return
+
+    await set_support_payment_status(db, request, 'rejected', processed_by=callback.from_user.id)
+
+    user = await get_user_by_id(db, request.user_id)
+    if user and user.telegram_id:
+        try:
+            await callback.bot.send_message(
+                user.telegram_id,
+                '❌ <b>Заявка на оплату отклонена</b>\n\n'
+                'Свяжитесь с поддержкой для уточнения деталей.',
+                parse_mode='HTML',
+            )
+        except Exception as e:
+            logger.error('Не удалось уведомить пользователя об отклонении', error=e)
+
+    try:
+        await callback.message.edit_text(
+            callback.message.html_text + '\n\n❌ <b>Отклонено</b>',
+            parse_mode='HTML',
+        )
+    except Exception:
+        pass
+    await callback.answer('Заявка отклонена')
 
 
 @error_handler
@@ -738,6 +985,9 @@ def register_balance_handlers(dp: Dispatcher):
     dp.callback_query.register(start_tribute_payment, F.data == 'topup_tribute')
 
     dp.callback_query.register(request_support_topup, F.data == 'topup_support')
+    dp.message.register(process_support_topup_amount, BalanceStates.waiting_for_support_request)
+    dp.callback_query.register(confirm_support_payment, F.data.startswith('sup_pay_ok:'))
+    dp.callback_query.register(reject_support_payment, F.data.startswith('sup_pay_no:'))
 
     from .yookassa import check_yookassa_payment_status
 

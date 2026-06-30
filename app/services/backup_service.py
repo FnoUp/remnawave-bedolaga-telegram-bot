@@ -2046,9 +2046,24 @@ class BackupService:
                 from app.services.admin_notification_service import AdminNotificationService, NotificationCategory
 
                 admin_service = AdminNotificationService(self.bot)
-                await admin_service.send_admin_notification(
-                    notification_text, category=NotificationCategory.INFRASTRUCTURE
-                )
+
+                # Бекап-уведомления идут в топик бекапов (BACKUP_SEND_TOPIC_ID), не в INFRASTRUCTURE
+                backup_chat = settings.get_backup_send_chat_id() or settings.get_admin_notifications_chat_id()
+                if backup_chat:
+                    send_kwargs = {
+                        'chat_id': backup_chat,
+                        'text': notification_text,
+                        'parse_mode': 'HTML',
+                    }
+                    if settings.BACKUP_SEND_TOPIC_ID:
+                        send_kwargs['message_thread_id'] = settings.BACKUP_SEND_TOPIC_ID
+                    await self.bot.send_message(**send_kwargs)
+
+                # Ошибки бекапа дополнительно дублируем в категорию ошибок (топик ошибок)
+                if 'error' in event_type:
+                    await admin_service.send_admin_notification(
+                        notification_text, category=NotificationCategory.ERRORS
+                    )
             except Exception as e:
                 logger.error('Ошибка отправки уведомления через AdminNotificationService', error=e)
 

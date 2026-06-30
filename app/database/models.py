@@ -4262,3 +4262,38 @@ class UserDeviceAlias(Base):
     alias = Column(String(64), nullable=False)
     created_at = Column(AwareDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(AwareDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class SupportPaymentRequest(Base):
+    """Заявка на оплату через поддержку (пополнение баланса или покупка подписки).
+
+    Создаётся, когда пользователь выбирает метод «Через поддержку». Заявка
+    привязывается к тикету (топик поддержки), админ подтверждает/отклоняет её
+    кнопкой, после чего баланс пополняется или активируется подписка.
+    """
+
+    __tablename__ = 'support_payment_requests'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='SET NULL'), nullable=True)
+
+    # balance — пополнение баланса; subscription — покупка подписки
+    request_type = Column(String(20), nullable=False, default='balance')
+    amount_kopeks = Column(Integer, nullable=False, default=0)
+    payload = Column(Text, nullable=True)  # JSON с деталями подписки (для subscription)
+
+    # pending — ожидает; approved — подтверждено; rejected — отклонено
+    status = Column(String(20), nullable=False, default='pending')
+
+    created_at = Column(AwareDateTime(), default=func.now())
+    processed_at = Column(AwareDateTime(), nullable=True)
+    processed_by = Column(BigInteger, nullable=True)  # telegram_id админа
+
+    user = relationship('User')
+
+    def __repr__(self):
+        return (
+            f'<SupportPaymentRequest(id={self.id}, user_id={self.user_id}, '
+            f'type={self.request_type}, amount={self.amount_kopeks}, status={self.status})>'
+        )
