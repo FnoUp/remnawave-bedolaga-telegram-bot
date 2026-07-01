@@ -84,6 +84,11 @@ async def handle_unknown_message(
     message: types.Message,
     db_user: User | None = None,
 ):
+    # В групповых чатах (админ-чат уведомлений) не отвечаем на прочий текст —
+    # там разрешён только осмысленный ввод (напр. ответ админа в тикете по FSM).
+    if message.chat and message.chat.type != 'private':
+        return
+
     texts = get_texts(db_user.language if db_user else 'ru')
 
     await message.answer(
