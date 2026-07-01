@@ -469,7 +469,7 @@ async def handle_admin_ticket_reply(message: types.Message, state: FSMContext, d
             await state.clear()
             return
 
-        # Обычный режим ответа админа
+        # Обычный режим ответа админа — НЕ отправляем сразу, показываем предпросмотр
         ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=False, load_user=True)
         if not ticket:
             texts = get_texts(db_user.language)
@@ -477,6 +477,80 @@ async def handle_admin_ticket_reply(message: types.Message, state: FSMContext, d
             await state.clear()
             return
 
+        # Сохраняем черновик ответа — уйдёт пользователю только после кнопки «Отправить»
+        await state.update_data(
+            pending_reply_text=reply_text,
+            pending_media_type=media_type,
+            pending_media_file_id=media_file_id,
+            pending_media_caption=media_caption,
+        )
+
+        texts = get_texts(db_user.language)
+        preview_body = reply_text if reply_text else texts.t('ADMIN_TICKET_REPLY_MEDIA_ONLY', '(вложение без текста)')
+        await message.answer(
+            texts.t(
+                'ADMIN_TICKET_REPLY_PREVIEW',
+                '📝 <b>Предпросмотр ответа (тикет #{ticket_id})</b>\n\n{body}\n\nОтправить пользователю?',
+            ).format(ticket_id=ticket_id, body=html.escape(preview_body)),
+            parse_mode='HTML',
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        types.InlineKeyboardButton(
+                            text=texts.t('ADMIN_TICKET_REPLY_SEND', '✅ Отправить'),
+                            callback_data='admin_reply_send',
+                        ),
+                        types.InlineKeyboardButton(
+                            text=texts.t('ADMIN_TICKET_REPLY_DISCARD', '❌ Отменить'),
+                            callback_data='admin_reply_discard',
+                        ),
+                    ]
+                ]
+            ),
+        )
+        # Состояние оставляем waiting_for_reply: повторный ввод текста обновит черновик
+
+    except Exception as e:
+        logger.error('Error adding admin ticket reply', error=e)
+        texts = get_texts(db_user.language)
+        await message.answer(
+            texts.t('TICKET_REPLY_ERROR', '❌ Произошла ошибка при отправке ответа. Попробуйте позже.')
+        )
+
+
+async def confirm_admin_ticket_reply_send(
+    callback: types.CallbackQuery, state: FSMContext, db_user: User, db: AsyncSession
+):
+    """Отправить черновик ответа пользователю (после кнопки «Отправить»)."""
+    texts = get_texts(db_user.language)
+    if not (settings.is_admin(callback.from_user.id) or SupportSettingsService.is_moderator(callback.from_user.id)):
+        await callback.answer(texts.ACCESS_DENIED, show_alert=True)
+        return
+
+    data = await state.get_data()
+    ticket_id = data.get('ticket_id')
+    try:
+        ticket_id = int(ticket_id) if ticket_id is not None else None
+    except (TypeError, ValueError):
+        ticket_id = None
+
+    reply_text = data.get('pending_reply_text', '') or ''
+    media_type = data.get('pending_media_type')
+    media_file_id = data.get('pending_media_file_id')
+    media_caption = data.get('pending_media_caption')
+
+    if not ticket_id or (not reply_text and not media_file_id):
+        await callback.answer(texts.t('TICKET_REPLY_ERROR', '❌ Черновик не найден.'), show_alert=True)
+        await state.clear()
+        return
+
+    ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=False, load_user=True)
+    if not ticket:
+        await callback.answer(texts.t('TICKET_NOT_FOUND', 'Тикет не найден.'), show_alert=True)
+        await state.clear()
+        return
+
+    try:
         # Добавляем сообщение от админа (внутри add_message статус станет ANSWERED)
         await TicketMessageCRUD.add_message(
             db,
@@ -488,40 +562,72 @@ async def handle_admin_ticket_reply(message: types.Message, state: FSMContext, d
             media_file_id=media_file_id,
             media_caption=media_caption,
         )
-
-        texts = get_texts(db_user.language)
-
-        await message.answer(
-            texts.t('ADMIN_TICKET_REPLY_SENT', '✅ Ответ отправлен!'),
-            reply_markup=types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        types.InlineKeyboardButton(
-                            text=texts.t('VIEW_TICKET', '👁️ Посмотреть тикет'),
-                            callback_data=f'admin_view_ticket_{ticket_id}',
-                        )
-                    ],
-                    [
-                        types.InlineKeyboardButton(
-                            text=texts.t('BACK_TO_TICKETS', '⬅️ К тикетам'), callback_data='admin_tickets'
-                        )
-                    ],
-                ]
-            ),
-        )
-
         await state.clear()
 
-        # Уведомляем пользователя о новом ответе
-        await notify_user_about_ticket_reply(message.bot, ticket, reply_text, db)
-        # Админ-уведомления о ответе в тикет отключены по требованию
+        try:
+            await callback.message.edit_text(
+                texts.t('ADMIN_TICKET_REPLY_SENT', '✅ Ответ отправлен!'),
+                reply_markup=types.InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            types.InlineKeyboardButton(
+                                text=texts.t('VIEW_TICKET', '👁️ Посмотреть тикет'),
+                                callback_data=f'admin_view_ticket_{ticket_id}',
+                            )
+                        ],
+                        [
+                            types.InlineKeyboardButton(
+                                text=texts.t('BACK_TO_TICKETS', '⬅️ К тикетам'), callback_data='admin_tickets'
+                            )
+                        ],
+                    ]
+                ),
+            )
+        except Exception:
+            pass
 
+        # Уведомляем пользователя о новом ответе
+        await notify_user_about_ticket_reply(callback.bot, ticket, reply_text, db)
+        await callback.answer(texts.t('ADMIN_TICKET_REPLY_SENT', '✅ Ответ отправлен!'))
     except Exception as e:
-        logger.error('Error adding admin ticket reply', error=e)
-        texts = get_texts(db_user.language)
-        await message.answer(
-            texts.t('TICKET_REPLY_ERROR', '❌ Произошла ошибка при отправке ответа. Попробуйте позже.')
+        logger.error('Error sending confirmed admin ticket reply', error=e)
+        await callback.answer(
+            texts.t('TICKET_REPLY_ERROR', '❌ Произошла ошибка при отправке ответа.'), show_alert=True
         )
+
+
+async def discard_admin_ticket_reply(callback: types.CallbackQuery, state: FSMContext, db_user: User):
+    """Отменить черновик ответа (после кнопки «Отменить»)."""
+    texts = get_texts(db_user.language)
+    if not (settings.is_admin(callback.from_user.id) or SupportSettingsService.is_moderator(callback.from_user.id)):
+        await callback.answer(texts.ACCESS_DENIED, show_alert=True)
+        return
+
+    data = await state.get_data()
+    ticket_id = data.get('ticket_id')
+    await state.clear()
+
+    keyboard_rows = []
+    if ticket_id:
+        keyboard_rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('VIEW_TICKET', '👁️ Посмотреть тикет'),
+                    callback_data=f'admin_view_ticket_{ticket_id}',
+                )
+            ]
+        )
+    keyboard_rows.append(
+        [types.InlineKeyboardButton(text=texts.t('BACK_TO_TICKETS', '⬅️ К тикетам'), callback_data='admin_tickets')]
+    )
+    try:
+        await callback.message.edit_text(
+            texts.t('ADMIN_TICKET_REPLY_DISCARDED', '❌ Ответ отменён. Черновик удалён.'),
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+        )
+    except Exception:
+        pass
+    await callback.answer(texts.t('ADMIN_TICKET_REPLY_DISCARDED_SHORT', '❌ Отменено'))
 
 
 async def mark_ticket_as_answered(callback: types.CallbackQuery, db_user: User, db: AsyncSession, state: FSMContext):
@@ -1162,6 +1268,8 @@ def register_handlers(dp: Dispatcher):
 
     # Отмена операций
     dp.callback_query.register(cancel_admin_ticket_reply, F.data == 'cancel_admin_ticket_reply')
+    dp.callback_query.register(confirm_admin_ticket_reply_send, F.data == 'admin_reply_send')
+    dp.callback_query.register(discard_admin_ticket_reply, F.data == 'admin_reply_discard')
 
     # Пагинация админских тикетов
     dp.callback_query.register(show_admin_tickets, F.data.startswith('admin_tickets_page_'))
