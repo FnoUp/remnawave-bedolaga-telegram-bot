@@ -42,6 +42,22 @@ async def get_support_payment_request(
     return result.scalar_one_or_none()
 
 
+async def get_pending_request_by_ticket(
+    db: AsyncSession,
+    ticket_id: int,
+) -> SupportPaymentRequest | None:
+    """Активная (pending) заявка на оплату, привязанная к тикету."""
+    result = await db.execute(
+        select(SupportPaymentRequest)
+        .where(
+            SupportPaymentRequest.ticket_id == ticket_id,
+            SupportPaymentRequest.status == 'pending',
+        )
+        .order_by(SupportPaymentRequest.id.desc())
+    )
+    return result.scalars().first()
+
+
 async def set_support_payment_status(
     db: AsyncSession,
     request: SupportPaymentRequest,

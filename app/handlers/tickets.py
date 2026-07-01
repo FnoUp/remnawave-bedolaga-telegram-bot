@@ -1156,6 +1156,27 @@ async def notify_admins_about_ticket_reply(
 
         keyboard = _build_ticket_notification_keyboard(service, ticket, user)
 
+        # Для платёжных тикетов (оплата через поддержку) добавляем кнопки заявки
+        try:
+            from app.database.crud.support_payment import get_pending_request_by_ticket
+
+            pay_req = await get_pending_request_by_ticket(db, ticket.id)
+            if pay_req:
+                pay_row = [
+                    types.InlineKeyboardButton(
+                        text='✅ Подтвердить оплату', callback_data=f'sup_pay_ok:{pay_req.id}'
+                    ),
+                    types.InlineKeyboardButton(
+                        text='❌ Отклонить оплату', callback_data=f'sup_pay_no:{pay_req.id}'
+                    ),
+                ]
+                if keyboard is None:
+                    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[pay_row])
+                else:
+                    keyboard.inline_keyboard.insert(0, pay_row)
+        except Exception as e:
+            logger.error('Не удалось добавить кнопки оплаты в уведомление тикета', error=e)
+
         result = await service.send_ticket_event_notification(
             notification_text, keyboard, media_file_id=media_file_id, media_type=media_type
         )

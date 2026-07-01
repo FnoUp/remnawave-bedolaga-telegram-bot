@@ -564,24 +564,46 @@ async def confirm_admin_ticket_reply_send(
         )
         await state.clear()
 
+        # Для платёжных тикетов сохраняем кнопки заявки после ответа
+        reply_kb_rows = []
+        try:
+            from app.database.crud.support_payment import get_pending_request_by_ticket
+
+            pay_req = await get_pending_request_by_ticket(db, ticket_id)
+            if pay_req:
+                reply_kb_rows.append(
+                    [
+                        types.InlineKeyboardButton(
+                            text='✅ Подтвердить оплату', callback_data=f'sup_pay_ok:{pay_req.id}'
+                        ),
+                        types.InlineKeyboardButton(
+                            text='❌ Отклонить оплату', callback_data=f'sup_pay_no:{pay_req.id}'
+                        ),
+                    ]
+                )
+        except Exception as e:
+            logger.error('Не удалось добавить кнопки оплаты после ответа', error=e)
+
+        reply_kb_rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('VIEW_TICKET', '👁️ Посмотреть тикет'),
+                    callback_data=f'admin_view_ticket_{ticket_id}',
+                )
+            ]
+        )
+        reply_kb_rows.append(
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('BACK_TO_TICKETS', '⬅️ К тикетам'), callback_data='admin_tickets'
+                )
+            ]
+        )
+
         try:
             await callback.message.edit_text(
                 texts.t('ADMIN_TICKET_REPLY_SENT', '✅ Ответ отправлен!'),
-                reply_markup=types.InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            types.InlineKeyboardButton(
-                                text=texts.t('VIEW_TICKET', '👁️ Посмотреть тикет'),
-                                callback_data=f'admin_view_ticket_{ticket_id}',
-                            )
-                        ],
-                        [
-                            types.InlineKeyboardButton(
-                                text=texts.t('BACK_TO_TICKETS', '⬅️ К тикетам'), callback_data='admin_tickets'
-                            )
-                        ],
-                    ]
-                ),
+                reply_markup=types.InlineKeyboardMarkup(inline_keyboard=reply_kb_rows),
             )
         except Exception:
             pass
@@ -596,7 +618,9 @@ async def confirm_admin_ticket_reply_send(
         )
 
 
-async def discard_admin_ticket_reply(callback: types.CallbackQuery, state: FSMContext, db_user: User):
+async def discard_admin_ticket_reply(
+    callback: types.CallbackQuery, state: FSMContext, db_user: User, db: AsyncSession
+):
     """Отменить черновик ответа (после кнопки «Отменить»)."""
     texts = get_texts(db_user.language)
     if not (settings.is_admin(callback.from_user.id) or SupportSettingsService.is_moderator(callback.from_user.id)):
@@ -608,6 +632,26 @@ async def discard_admin_ticket_reply(callback: types.CallbackQuery, state: FSMCo
     await state.clear()
 
     keyboard_rows = []
+    # Для платёжных тикетов сохраняем кнопки заявки после отмены ответа
+    if ticket_id:
+        try:
+            from app.database.crud.support_payment import get_pending_request_by_ticket
+
+            pay_req = await get_pending_request_by_ticket(db, int(ticket_id))
+            if pay_req:
+                keyboard_rows.append(
+                    [
+                        types.InlineKeyboardButton(
+                            text='✅ Подтвердить оплату', callback_data=f'sup_pay_ok:{pay_req.id}'
+                        ),
+                        types.InlineKeyboardButton(
+                            text='❌ Отклонить оплату', callback_data=f'sup_pay_no:{pay_req.id}'
+                        ),
+                    ]
+                )
+        except Exception as e:
+            logger.error('Не удалось добавить кнопки оплаты после отмены ответа', error=e)
+
     if ticket_id:
         keyboard_rows.append(
             [
