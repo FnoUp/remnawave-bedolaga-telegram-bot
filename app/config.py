@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     TEST_EMAIL: str = ''  # e.g., test@example.com
     TEST_EMAIL_PASSWORD: str = ''  # Password for test account
 
+    # Гайд «Как подключиться» — статья (Telegraph) + видео-инструкция, кнопка в главном меню
+    CONNECTION_GUIDE_ENABLED: bool = False
+    CONNECTION_GUIDE_URL: str = ''  # ссылка на Telegraph-статью
+    CONNECTION_GUIDE_VIDEO_PATH: str = ''  # путь к видео внутри контейнера, напр. /app/uploads/guides/happ_guide.mp4
+
     SUPPORT_USERNAME: str = '@support'
     SUPPORT_MENU_ENABLED: bool = True
     SUPPORT_SYSTEM_MODE: str = 'both'  # one of: tickets, contact, both
@@ -2164,6 +2169,9 @@ class Settings(BaseSettings):
 
     def is_support_topup_enabled(self) -> bool:
         return bool(self.SUPPORT_TOPUP_ENABLED)
+
+    def is_connection_guide_enabled(self) -> bool:
+        return bool(self.CONNECTION_GUIDE_ENABLED) and bool(self.CONNECTION_GUIDE_URL)
 
     def get_yookassa_return_url(self) -> str:
         if self.YOOKASSA_RETURN_URL:

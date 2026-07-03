@@ -569,6 +569,57 @@ async def show_faq_pages(
     await callback.answer()
 
 
+async def show_connection_guide(
+    callback: types.CallbackQuery,
+    db_user: User,
+):
+    """Гайд «Как подключиться»: видео-инструкция + ссылка на Telegraph-статью."""
+    texts = get_texts(db_user.language if db_user else settings.DEFAULT_LANGUAGE)
+
+    if not settings.is_connection_guide_enabled():
+        await callback.answer(
+            texts.t('CONNECTION_GUIDE_UNAVAILABLE', 'Раздел временно недоступен.'), show_alert=True
+        )
+        return
+
+    await callback.answer()
+
+    keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('CONNECTION_GUIDE_READ_ARTICLE', '📖 Подробная инструкция'),
+                    url=settings.CONNECTION_GUIDE_URL,
+                )
+            ],
+            [types.InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
+        ]
+    )
+
+    caption = texts.t(
+        'CONNECTION_GUIDE_CAPTION',
+        '🎥 <b>Как подключиться</b>\n\n'
+        'Видео-инструкция по установке и настройке приложения ниже.\n'
+        'Подробные шаги (в т.ч. смена региона App Store) — в статье по кнопке.',
+    )
+
+    video_path = settings.CONNECTION_GUIDE_VIDEO_PATH
+    if video_path:
+        try:
+            await callback.message.answer_video(
+                types.FSInputFile(video_path),
+                caption=caption,
+                parse_mode='HTML',
+                reply_markup=keyboard,
+            )
+            return
+        except Exception as e:
+            logger.error('Не удалось отправить видео-инструкцию', error=e, path=video_path)
+
+    # Видео недоступно — показываем только ссылку на статью
+    await callback.message.answer(caption, parse_mode='HTML', reply_markup=keyboard)
+
+
 async def show_faq_page(
     callback: types.CallbackQuery,
     db_user: User,
@@ -1680,6 +1731,7 @@ def register_handlers(dp: Dispatcher):
     )
 
     dp.callback_query.register(show_service_rules, F.data == 'menu_rules')
+    dp.callback_query.register(show_connection_guide, F.data == 'connection_guide')
 
     dp.callback_query.register(
         show_info_menu,

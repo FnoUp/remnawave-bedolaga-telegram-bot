@@ -775,6 +775,14 @@ def get_main_menu_keyboard(
     if support_enabled:
         paired_buttons.append(InlineKeyboardButton(text=texts.MENU_SUPPORT, callback_data='menu_support'))
 
+    if settings.is_connection_guide_enabled():
+        paired_buttons.append(
+            InlineKeyboardButton(
+                text=texts.t('CONNECTION_GUIDE_BUTTON', '🎥 Как подключиться'),
+                callback_data='connection_guide',
+            )
+        )
+
     # Добавляем кнопку активации
     if settings.ACTIVATE_BUTTON_VISIBLE:
         paired_buttons.append(InlineKeyboardButton(text=settings.ACTIVATE_BUTTON_TEXT, callback_data='activate_button'))
