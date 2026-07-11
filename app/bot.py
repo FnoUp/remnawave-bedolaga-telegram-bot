@@ -297,6 +297,15 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     except Exception as e:
         logger.error('Ошибка запуска RemnaWave retry queue', error=e)
 
+    # Кнопка меню Telegram (рядом с полем ввода) → отправляет /start,
+    # что сбрасывает FSM-состояние пользователя и открывает главную панель.
+    try:
+        await bot.set_my_commands([types.BotCommand(command='start', description='🏠 Главное меню')])
+        await bot.set_chat_menu_button(menu_button=types.MenuButtonCommands())
+        logger.info('Кнопка меню Telegram настроена (/start)')
+    except Exception as e:
+        logger.warning('Не удалось настроить кнопку меню Telegram', error=e)
+
     logger.info('Бот успешно настроен')
 
     return bot, dp
