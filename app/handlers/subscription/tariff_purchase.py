@@ -1810,6 +1810,15 @@ async def confirm_tariff_purchase(
         parse_mode='HTML',
     )
 
+    # Гайд «Как подключиться» — только при ПЕРВОЙ покупке, не при продлении
+    if not existing_subscription:
+        try:
+            from app.handlers.menu import send_connection_guide_intro
+
+            await send_connection_guide_intro(callback.bot, callback.from_user.id, db_user.language)
+        except Exception as e:
+            logger.error('Не удалось отправить гайд после первой покупки', error=e)
+
 
 # ==================== Покупка суточного тарифа ====================
 

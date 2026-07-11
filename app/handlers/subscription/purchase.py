@@ -1272,6 +1272,14 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
 
         logger.info('✅ Активирована тестовая подписка для пользователя', telegram_id=db_user.telegram_id)
 
+        # Гайд «Как подключиться» — первое реальное подключение нового пользователя
+        try:
+            from app.handlers.menu import send_connection_guide_intro
+
+            await send_connection_guide_intro(callback.bot, callback.from_user.id, db_user.language)
+        except Exception as e:
+            logger.error('Не удалось отправить гайд после активации триала', error=e)
+
     except Exception as e:
         logger.error('Ошибка активации триала', error=e)
         failure_text = texts.ERROR

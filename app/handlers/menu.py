@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import structlog
-from aiogram import Dispatcher, F, types
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -569,11 +569,61 @@ async def show_faq_pages(
     await callback.answer()
 
 
+def _connection_guide_intro_keyboard(texts) -> types.InlineKeyboardMarkup:
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('CONNECTION_GUIDE_READ_ARTICLE', '📖 Подробная инструкция'),
+                    url=settings.CONNECTION_GUIDE_URL,
+                )
+            ],
+            [
+                types.InlineKeyboardButton(
+                    text=texts.t('CONNECTION_GUIDE_VIDEO_BUTTON', '🎥 Видео: смена региона (Канада)'),
+                    callback_data='connection_guide_media',
+                )
+            ],
+            [types.InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
+        ]
+    )
+
+
+def _connection_guide_intro_text(texts) -> str:
+    return texts.t(
+        'CONNECTION_GUIDE_CAPTION',
+        '🎥 <b>Как подключиться</b>\n\n'
+        'Разберитесь за 2 минуты:\n'
+        '• «📖 Подробная инструкция» — установка Happ, смена региона App Store, кнопки приложения\n'
+        '• «🎥 Видео: смена региона» — короткая видео/скрин-инструкция',
+    )
+
+
+async def send_connection_guide_intro(bot: Bot, chat_id: int, language: str) -> None:
+    """Публичная точка входа: шлёт вводное сообщение гайда (2 кнопки).
+
+    Используется и кнопкой меню, и хендлерами покупки подписки (после
+    первой успешной покупки) — единая логика, единое место правки.
+    """
+    if not settings.is_connection_guide_enabled():
+        return
+    texts = get_texts(language)
+    try:
+        await bot.send_message(
+            chat_id,
+            _connection_guide_intro_text(texts),
+            parse_mode='HTML',
+            reply_markup=_connection_guide_intro_keyboard(texts),
+        )
+    except Exception as e:
+        logger.error('Не удалось отправить гайд после покупки', error=e, chat_id=chat_id)
+
+
 async def show_connection_guide(
     callback: types.CallbackQuery,
     db_user: User,
 ):
-    """Гайд «Как подключиться»: видео-инструкция + ссылка на Telegraph-статью."""
+    """Гайд «Как подключиться» из главного меню: вводное сообщение с 2 кнопками."""
     texts = get_texts(db_user.language if db_user else settings.DEFAULT_LANGUAGE)
 
     if not settings.is_connection_guide_enabled():
@@ -583,41 +633,49 @@ async def show_connection_guide(
         return
 
     await callback.answer()
-
-    keyboard = types.InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                types.InlineKeyboardButton(
-                    text=texts.t('CONNECTION_GUIDE_READ_ARTICLE', '📖 Подробная инструкция'),
-                    url=settings.CONNECTION_GUIDE_URL,
-                )
-            ],
-            [types.InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
-        ]
+    await callback.message.answer(
+        _connection_guide_intro_text(texts),
+        parse_mode='HTML',
+        reply_markup=_connection_guide_intro_keyboard(texts),
     )
 
+
+async def send_connection_guide_media(
+    callback: types.CallbackQuery,
+    db_user: User,
+):
+    """Кнопка «Видео: смена региона» — шлёт файл (видео или, пока видео нет, скриншот)."""
+    texts = get_texts(db_user.language if db_user else settings.DEFAULT_LANGUAGE)
+
+    if not settings.is_connection_guide_enabled():
+        await callback.answer(
+            texts.t('CONNECTION_GUIDE_UNAVAILABLE', 'Раздел временно недоступен.'), show_alert=True
+        )
+        return
+
+    media_path = settings.CONNECTION_GUIDE_VIDEO_PATH
+    if not media_path:
+        await callback.answer(texts.t('CONNECTION_GUIDE_NO_MEDIA', 'Материал скоро будет добавлен.'), show_alert=True)
+        return
+
+    await callback.answer()
+    is_video = media_path.lower().endswith(('.mp4', '.mov', '.mkv', '.webm'))
     caption = texts.t(
-        'CONNECTION_GUIDE_CAPTION',
-        '🎥 <b>Как подключиться</b>\n\n'
-        'Видео-инструкция по установке и настройке приложения ниже.\n'
-        'Подробные шаги (в т.ч. смена региона App Store) — в статье по кнопке.',
+        'CONNECTION_GUIDE_MEDIA_CAPTION',
+        '🎥 Смена региона App Store на Канаду + обзор приложения',
     )
-
-    video_path = settings.CONNECTION_GUIDE_VIDEO_PATH
-    if video_path:
-        try:
+    try:
+        if is_video:
             await callback.message.answer_video(
-                types.FSInputFile(video_path),
-                caption=caption,
-                parse_mode='HTML',
-                reply_markup=keyboard,
+                types.FSInputFile(media_path), caption=caption, parse_mode='HTML'
             )
-            return
-        except Exception as e:
-            logger.error('Не удалось отправить видео-инструкцию', error=e, path=video_path)
-
-    # Видео недоступно — показываем только ссылку на статью
-    await callback.message.answer(caption, parse_mode='HTML', reply_markup=keyboard)
+        else:
+            await callback.message.answer_photo(
+                types.FSInputFile(media_path), caption=caption, parse_mode='HTML'
+            )
+    except Exception as e:
+        logger.error('Не удалось отправить медиа гайда', error=e, path=media_path)
+        await callback.answer(texts.t('CONNECTION_GUIDE_MEDIA_ERROR', 'Не удалось загрузить файл.'), show_alert=True)
 
 
 async def show_faq_page(
@@ -1732,6 +1790,7 @@ def register_handlers(dp: Dispatcher):
 
     dp.callback_query.register(show_service_rules, F.data == 'menu_rules')
     dp.callback_query.register(show_connection_guide, F.data == 'connection_guide')
+    dp.callback_query.register(send_connection_guide_media, F.data == 'connection_guide_media')
 
     dp.callback_query.register(
         show_info_menu,
