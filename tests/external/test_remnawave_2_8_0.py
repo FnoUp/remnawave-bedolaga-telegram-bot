@@ -200,9 +200,13 @@ async def test_happ_local_encryption_rejects_oversized_payload(monkeypatch):
     assert RemnaWaveAPI._encrypt_locally('https://sub.example/' + 'x' * 600) is None
 
 
-async def test_happ_local_encryption_disabled_by_setting():
+async def test_happ_local_encryption_disabled_by_setting(monkeypatch):
     """HAPP_CRYPTOLINK_LOCAL_ENCRYPTION_ENABLED=false должен пропустить локальный
-    путь (fixture уже выключила флаг) — цепочка идёт в панель/внешний API."""
+    путь — цепочка идёт только в панель."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, 'HAPP_CRYPTOLINK_LOCAL_ENCRYPTION_ENABLED', False)
+
     assert RemnaWaveAPI._encrypt_locally('https://sub.example/x') is None
 
 
