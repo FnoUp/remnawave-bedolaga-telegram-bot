@@ -28,6 +28,16 @@ logger = structlog.get_logger(__name__)
 router = Router()
 
 
+def _display_tariff_name(sub, *, fallback: str = 'Подписка') -> str:
+    """Название подписки для отображения. Триал не привязан к тарифу —
+    показываем «Пробная подписка», а не голое «Подписка»."""
+    if sub.tariff:
+        return sub.tariff.name
+    if getattr(sub, 'is_trial', False):
+        return 'Пробная подписка'
+    return fallback
+
+
 def _status_emoji(sub) -> str:
     """Return status emoji based on subscription's actual status."""
     actual = sub.actual_status
@@ -52,7 +62,7 @@ def _status_label(sub) -> str:
 
 def _format_subscription_line(sub, idx: int) -> str:
     """Format a single subscription for the list view."""
-    tariff_name = sub.tariff.name if sub.tariff else 'Подписка'
+    tariff_name = _display_tariff_name(sub)
     emoji = _status_emoji(sub)
     label = _status_label(sub)
 
@@ -82,7 +92,7 @@ def _build_subscriptions_keyboard(subscriptions: list, language: str) -> types.I
     """Build inline keyboard with per-subscription management buttons."""
     buttons = []
     for idx, sub in enumerate(subscriptions, 1):
-        tariff_name = sub.tariff.name if sub.tariff else f'Подписка #{sub.id}'
+        tariff_name = _display_tariff_name(sub, fallback=f'Подписка #{sub.id}')
         buttons.append(
             [
                 types.InlineKeyboardButton(
@@ -205,7 +215,7 @@ async def show_subscription_detail(
     # (e.g. 'subscription_autopay') can resolve the right subscription via FSM.
     await state.update_data(active_subscription_id=sub_id)
 
-    tariff_name = subscription.tariff.name if subscription.tariff else 'Подписка'
+    tariff_name = _display_tariff_name(subscription)
 
     # Traffic
     if subscription.traffic_limit_gb == 0:
@@ -402,7 +412,7 @@ async def handle_subscription_delete_confirm(
         await callback.answer('Можно удалить только истекшую или отключённую подписку', show_alert=True)
         return
 
-    tariff_name = subscription.tariff.name if subscription.tariff else 'Подписка'
+    tariff_name = _display_tariff_name(subscription)
 
     text = (
         f'🗑 <b>Удалить подписку «{tariff_name}»?</b>\n\n'

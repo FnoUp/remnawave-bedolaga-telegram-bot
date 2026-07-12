@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     # Гайд «Как подключиться» — статья (Telegraph) + видео-инструкция, кнопка в главном меню
     CONNECTION_GUIDE_ENABLED: bool = False
     CONNECTION_GUIDE_URL: str = ''  # ссылка на Telegraph-статью
-    CONNECTION_GUIDE_VIDEO_PATH: str = ''  # путь к видео внутри контейнера, напр. /app/uploads/guides/happ_guide.mp4
+    CONNECTION_GUIDE_VIDEO_PATH: str = ''  # обзор приложения: путь к фото/видео, напр. /app/assets/guides/happ_guide.mp4
+    CONNECTION_GUIDE_REGION_VIDEO_PATH: str = ''  # отдельное видео: смена региона App Store на Канаду
 
     SUPPORT_USERNAME: str = '@support'
     SUPPORT_MENU_ENABLED: bool = True

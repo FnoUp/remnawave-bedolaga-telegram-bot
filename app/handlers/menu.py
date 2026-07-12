@@ -573,7 +573,7 @@ def _is_video_file(path: str) -> bool:
     return path.lower().endswith(('.mp4', '.mov', '.mkv', '.webm'))
 
 
-def _connection_guide_intro_keyboard(texts, *, with_media_button: bool) -> types.InlineKeyboardMarkup:
+def _connection_guide_intro_keyboard(texts, *, with_overview_video_button: bool) -> types.InlineKeyboardMarkup:
     rows = [
         [
             types.InlineKeyboardButton(
@@ -582,15 +582,23 @@ def _connection_guide_intro_keyboard(texts, *, with_media_button: bool) -> types
             )
         ]
     ]
-    if with_media_button:
+    if with_overview_video_button:
         rows.append(
             [
                 types.InlineKeyboardButton(
-                    text=texts.t('CONNECTION_GUIDE_VIDEO_BUTTON', '🎥 Видео: смена региона (Канада)'),
+                    text=texts.t('CONNECTION_GUIDE_VIDEO_BUTTON', '🎥 Видео: обзор приложения'),
                     callback_data='connection_guide_media',
                 )
             ]
         )
+    rows.append(
+        [
+            types.InlineKeyboardButton(
+                text=texts.t('CONNECTION_GUIDE_REGION_BUTTON', '🌍 Смена региона App Store'),
+                callback_data='connection_guide_region',
+            )
+        ]
+    )
     rows.append([types.InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
     return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -631,7 +639,7 @@ async def send_connection_guide_intro(bot: Bot, chat_id: int, language: str) -> 
                 types.FSInputFile(media_path),
                 caption=_connection_guide_intro_text(texts, has_media=True),
                 parse_mode='HTML',
-                reply_markup=_connection_guide_intro_keyboard(texts, with_media_button=False),
+                reply_markup=_connection_guide_intro_keyboard(texts, with_overview_video_button=False),
             )
         else:
             # Видео (или медиа ещё нет) — по кнопке, чтобы не грузить тяжёлый файл сразу
@@ -639,7 +647,7 @@ async def send_connection_guide_intro(bot: Bot, chat_id: int, language: str) -> 
                 chat_id,
                 _connection_guide_intro_text(texts, has_media=False),
                 parse_mode='HTML',
-                reply_markup=_connection_guide_intro_keyboard(texts, with_media_button=bool(media_path)),
+                reply_markup=_connection_guide_intro_keyboard(texts, with_overview_video_button=bool(media_path)),
             )
     except Exception as e:
         logger.error('Не удалось отправить гайд после покупки', error=e, chat_id=chat_id)
@@ -667,7 +675,7 @@ async def show_connection_guide(
                 types.FSInputFile(media_path),
                 caption=_connection_guide_intro_text(texts, has_media=True),
                 parse_mode='HTML',
-                reply_markup=_connection_guide_intro_keyboard(texts, with_media_button=False),
+                reply_markup=_connection_guide_intro_keyboard(texts, with_overview_video_button=False),
             )
             return
         except Exception as e:
@@ -676,7 +684,7 @@ async def show_connection_guide(
     await callback.message.answer(
         _connection_guide_intro_text(texts, has_media=False),
         parse_mode='HTML',
-        reply_markup=_connection_guide_intro_keyboard(texts, with_media_button=bool(media_path)),
+        reply_markup=_connection_guide_intro_keyboard(texts, with_overview_video_button=bool(media_path)),
     )
 
 
@@ -684,7 +692,7 @@ async def send_connection_guide_media(
     callback: types.CallbackQuery,
     db_user: User,
 ):
-    """Кнопка «Видео: смена региона» — шлёт файл (видео или, пока видео нет, скриншот)."""
+    """Кнопка «Видео: обзор приложения» — шлёт файл с обзором главного экрана."""
     texts = get_texts(db_user.language if db_user else settings.DEFAULT_LANGUAGE)
 
     if not settings.is_connection_guide_enabled():
@@ -699,11 +707,8 @@ async def send_connection_guide_media(
         return
 
     await callback.answer()
-    is_video = media_path.lower().endswith(('.mp4', '.mov', '.mkv', '.webm'))
-    caption = texts.t(
-        'CONNECTION_GUIDE_MEDIA_CAPTION',
-        '🎥 Смена региона App Store на Канаду + обзор приложения',
-    )
+    is_video = _is_video_file(media_path)
+    caption = texts.t('CONNECTION_GUIDE_MEDIA_CAPTION', '🎥 Обзор главного экрана приложения')
     try:
         if is_video:
             await callback.message.answer_video(
@@ -715,6 +720,44 @@ async def send_connection_guide_media(
             )
     except Exception as e:
         logger.error('Не удалось отправить медиа гайда', error=e, path=media_path)
+        await callback.answer(texts.t('CONNECTION_GUIDE_MEDIA_ERROR', 'Не удалось загрузить файл.'), show_alert=True)
+
+
+async def send_connection_guide_region_video(
+    callback: types.CallbackQuery,
+    db_user: User,
+):
+    """Кнопка «Смена региона App Store» — шлёт отдельное видео/фото по смене региона."""
+    texts = get_texts(db_user.language if db_user else settings.DEFAULT_LANGUAGE)
+
+    if not settings.is_connection_guide_enabled():
+        await callback.answer(
+            texts.t('CONNECTION_GUIDE_UNAVAILABLE', 'Раздел временно недоступен.'), show_alert=True
+        )
+        return
+
+    media_path = settings.CONNECTION_GUIDE_REGION_VIDEO_PATH
+    if not media_path:
+        await callback.answer(
+            texts.t('CONNECTION_GUIDE_REGION_NO_MEDIA', 'Видео скоро будет добавлено. Пока смотрите статью по кнопке выше.'),
+            show_alert=True,
+        )
+        return
+
+    await callback.answer()
+    is_video = _is_video_file(media_path)
+    caption = texts.t('CONNECTION_GUIDE_REGION_CAPTION', '🌍 Как сменить регион App Store на Канаду')
+    try:
+        if is_video:
+            await callback.message.answer_video(
+                types.FSInputFile(media_path), caption=caption, parse_mode='HTML'
+            )
+        else:
+            await callback.message.answer_photo(
+                types.FSInputFile(media_path), caption=caption, parse_mode='HTML'
+            )
+    except Exception as e:
+        logger.error('Не удалось отправить видео смены региона', error=e, path=media_path)
         await callback.answer(texts.t('CONNECTION_GUIDE_MEDIA_ERROR', 'Не удалось загрузить файл.'), show_alert=True)
 
 
@@ -1831,6 +1874,7 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(show_service_rules, F.data == 'menu_rules')
     dp.callback_query.register(show_connection_guide, F.data == 'connection_guide')
     dp.callback_query.register(send_connection_guide_media, F.data == 'connection_guide_media')
+    dp.callback_query.register(send_connection_guide_region_video, F.data == 'connection_guide_region')
 
     dp.callback_query.register(
         show_info_menu,
