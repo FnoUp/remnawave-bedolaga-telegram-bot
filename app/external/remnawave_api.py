@@ -5,11 +5,13 @@ import ssl
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 import aiohttp
 import structlog
+from Crypto.Cipher import PKCS1_v1_5
+from Crypto.PublicKey import RSA
 
 from app.config import settings
 
@@ -240,10 +242,11 @@ class RemnaWaveTransientError(RemnaWaveAPIError):
     surfaced by the monitoring service, not by per-request error logs."""
 
 
-# Публичный ключ RSA для happ://crypt4/ — открытый ключ, не секрет (тот же,
-# что в github.com/kastov/cryptohapp). Шифрование локальное, без сети —
-# см. RemnaWaveAPI.encrypt_happ_crypto_link().
-_HAPP_PUBLIC_KEY_V4_PEM = b"""-----BEGIN PUBLIC KEY-----
+# Публичный RSA-ключ Happ для crypt4-ссылок — тот же, которым официальная страница
+# подписки Remnawave шифрует ссылку в браузере (@kastov/cryptohapp: JSEncrypt =
+# RSA PKCS#1 v1.5 + base64). Ключ публичный, расшифровать ссылку может только
+# приложение Happ своим приватным ключом.
+HAPP_CRYPTO_V4_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
 MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA3UZ0M3L4K+WjM3vkbQnz
 ozHg/cRbEXvQ6i4A8RVN4OM3rK9kU01FdjyoIgywve8OEKsFnVwERZAQZ1Trv60B
 hmaM76QQEE+EUlIOL9EpwKWGtTL5lYC1sT9XJMNP3/CI0gP5wwQI88cY/xedpOEB
@@ -256,14 +259,27 @@ zgBkQ9DFfZAGLWf9TR7KVjZC/3NsuUCDoAOcpmN8pENBbeB0puiKMMWSvll36+2M
 YR1Xs0MgT8Y9TwhE2+TnnTJOhzmHi/BxiUlY/w2E0s4ax9GHAmX0wyF4zeV7kDkc
 vHuEdc0d7vDmdw0oqCqWj0Xwq86HfORu6tm1A8uRATjb4SzjTKclKuoElVAVa5Jo
 oh/uZMozC65SmDw+N5p6Su8CAwEAAQ==
------END PUBLIC KEY-----
-"""
+-----END PUBLIC KEY-----"""
+
+HAPP_CRYPTO_V4_DEEP_LINK_PREFIX = 'happ://crypt4/'
+HAPP_CRYPTO_API_CACHE_MAX = 512
 
 
 class RemnaWaveAPI:
-    # Remnawave 2.8.0 удалил свой POST /api/system/tools/happ/encrypt. Вместо
-    # него encrypt_happ_crypto_link() шифрует happ://crypt4/ локально (RSA,
-    # публичный ключ выше) — без сети, без сторонних сервисов.
+    # Remnawave 2.8.0 удалил POST /api/system/tools/happ/encrypt (панель теперь
+    # генерирует crypt-ссылки на клиенте своего subpage). Клиент создаётся на каждый
+    # запрос, поэтому состояние happ-шифрования держим на классе (сбрасывается рестартом):
+    #  - _happ_encrypt_unavailable: после первого 404 не дёргаем удалённый эндпоинт
+    #    (иначе 404 + warning на каждый вызов get_subscription_info/enrich_user_with_happ_link);
+    #  - _happ_local_cache: subscription_url -> crypt4-ссылка локального шифрования.
+    #    Паддинг PKCS#1 v1.5 случайный, без кэша каждый вызов даёт новую ссылку для
+    #    того же URL — и синки (сравнение с сохранённой subscription_crypto_link)
+    #    видели бы ложное «изменение» на каждом проходе.
+    #  Внешний Happ crypto API (crypto.happ.su) сознательно НЕ используется —
+    #  ссылка подписки пользователя не должна уходить на сторонний сервис.
+    #  Только локальное шифрование + (если доступен) сам панельный эндпоинт.
+    _happ_encrypt_unavailable: bool = False
+    _happ_local_cache: ClassVar[dict[str, str]] = {}
 
     def __init__(
         self,
@@ -1406,43 +1422,70 @@ class RemnaWaveAPI:
         return True
 
     async def encrypt_happ_crypto_link(self, link_to_encrypt: str) -> str | None:
-        """Шифрует ссылку в happ://crypt4/... полностью локально, без сети.
-
-        Remnawave >=2.8.0 удалил собственный POST /api/system/tools/happ/encrypt.
-        Вместо похода к стороннему сервису (crypto.happ.su) шифруем сами: RSA
-        (PKCS1v15) публичным ключом crypt4 — тот же алгоритм и ключ, что в
-        открытой библиотеке github.com/kastov/cryptohapp. Публичный ключ не
-        секрет, шифрование целиком локальное — ссылка пользователя никуда не
-        уходит. crypt5 не используем: его ключевой материал (34 приватных
-        ключа) нигде не публикуется в открытом виде, crypt4 — последняя
-        версия с полностью открытым и проверяемым ключом.
-        """
-        try:
-            from cryptography.hazmat.primitives.asymmetric import padding as _rsa_padding
-            from cryptography.hazmat.primitives.serialization import load_pem_public_key
-
-            public_key = load_pem_public_key(_HAPP_PUBLIC_KEY_V4_PEM)
-            data_bytes = link_to_encrypt.encode('utf-8')
-            # PKCS1v15: максимум key_size_bytes-11 на блок (для 4096-бит ключа — 501 байт)
-            max_payload = (public_key.key_size // 8) - 11
-            if len(data_bytes) > max_payload:
-                logger.warning(
-                    'Ссылка подписки слишком длинная для happ crypt4',
-                    length=len(data_bytes),
-                    max_payload=max_payload,
-                )
-                return None
-            ciphertext = public_key.encrypt(data_bytes, _rsa_padding.PKCS1v15())
-            encoded = base64.b64encode(ciphertext).decode('ascii')
-            encrypted = f'happ://crypt4/{encoded}'
+        encrypted = self._encrypt_locally(link_to_encrypt)
+        if encrypted:
             return encrypted
+        return await self._encrypt_via_panel(link_to_encrypt)
+
+    @staticmethod
+    def _encrypt_locally(link_to_encrypt: str) -> str | None:
+        """Шифрует ссылку подписки в happ://crypt4/... локально, без сети.
+
+        Повторяет алгоритм официальной страницы подписки Remnawave
+        (@kastov/cryptohapp): RSA PKCS#1 v1.5 публичным ключом Happ + base64.
+        Единственный источник crypt-ссылок в этом форке — панельный эндпоинт
+        (если панель его ещё поддерживает) или это локальное шифрование.
+        Внешний Happ crypto API (crypto.happ.su) сознательно не используется:
+        ссылка подписки пользователя не должна уходить на сторонний сервис.
+        """
+        if not settings.HAPP_CRYPTOLINK_LOCAL_ENCRYPTION_ENABLED:
+            return None
+        cached = RemnaWaveAPI._happ_local_cache.get(link_to_encrypt)
+        if cached:
+            return cached
+        try:
+            key = RSA.import_key(HAPP_CRYPTO_V4_PUBLIC_KEY)
+            payload = link_to_encrypt.encode('utf-8')
+            # Лимит PKCS#1 v1.5 — размер ключа минус 11 байт (501 для RSA-4096)
+            if len(payload) > key.size_in_bytes() - 11:
+                logger.warning('Ссылка слишком длинная для happ crypt4', length=len(payload))
+                return None
+            encrypted = PKCS1_v1_5.new(key).encrypt(payload)
+            link = HAPP_CRYPTO_V4_DEEP_LINK_PREFIX + base64.b64encode(encrypted).decode('ascii')
+            if len(RemnaWaveAPI._happ_local_cache) >= HAPP_CRYPTO_API_CACHE_MAX:
+                RemnaWaveAPI._happ_local_cache.clear()
+            RemnaWaveAPI._happ_local_cache[link_to_encrypt] = link
+            return link
         except Exception as e:
-            logger.warning('Ошибка локального шифрования happ-ссылки (crypt4)', error=e)
+            logger.warning('Не удалось локально зашифровать happ ссылку', error=e)
+            return None
+
+    async def _encrypt_via_panel(self, link_to_encrypt: str) -> str | None:
+        # Эндпоинт удалён в Remnawave 2.8.0 — после первого 404 больше не дёргаем.
+        if RemnaWaveAPI._happ_encrypt_unavailable:
+            return None
+        try:
+            data = {'linkToEncrypt': link_to_encrypt}
+            response = await self._make_request('POST', '/api/system/tools/happ/encrypt', data)
+            return response.get('response', {}).get('encryptedLink')
+        except RemnaWaveAPIError as e:
+            if e.status_code == 404:
+                RemnaWaveAPI._happ_encrypt_unavailable = True
+                logger.info('happ-encrypt эндпоинт недоступен (удалён в Remnawave 2.8.0)')
+                return None
+            logger.warning('Не удалось зашифровать happ ссылку', message=e.message)
+            return None
+        except Exception as e:
+            logger.warning('Ошибка при шифровании happ ссылки', error=e)
             return None
 
     async def enrich_user_with_happ_link(self, user: RemnaWaveUser) -> RemnaWaveUser:
         if not user.happ_crypto_link and user.subscription_url:
-            encrypted = await self.encrypt_happ_crypto_link(user.subscription_url)
+            # Сначала локальное шифрование (мгновенно, без сети), затем панельный
+            # эндпоинт (2.7.x) — без внешних сервисов.
+            encrypted = self._encrypt_locally(user.subscription_url) or await self._encrypt_via_panel(
+                user.subscription_url
+            )
             if encrypted:
                 user.happ_crypto_link = encrypted
         return user
