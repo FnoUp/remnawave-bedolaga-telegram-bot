@@ -2064,6 +2064,14 @@ class RemnaWaveService:
                             except Exception:
                                 pass
 
+                        _new_sub_url = panel_user.get('subscriptionUrl', '')
+                        _new_crypto_link = panel_user.get('subscriptionCryptoLink', '')
+                        if not _new_crypto_link and settings.is_happ_cryptolink_mode() and _new_sub_url:
+                            try:
+                                _new_crypto_link = await api.encrypt_happ_crypto_link(_new_sub_url) or ''
+                            except Exception as crypto_err:
+                                logger.warning('Не удалось получить happ crypto-ссылку', error=crypto_err)
+
                         new_sub = Subscription(
                             user_id=_bot_user.id,
                             status=_sub_status.value,
@@ -2076,8 +2084,8 @@ class RemnaWaveService:
                             remnawave_uuid=panel_uuid,
                             remnawave_short_id=_short_id,
                             remnawave_short_uuid=panel_user.get('shortUuid'),
-                            subscription_url=panel_user.get('subscriptionUrl', ''),
-                            subscription_crypto_link=panel_user.get('subscriptionCryptoLink', ''),
+                            subscription_url=_new_sub_url,
+                            subscription_crypto_link=_new_crypto_link,
                             tariff_id=_matched_tariff_id,
                         )
                         db.add(new_sub)
@@ -2117,6 +2125,20 @@ class RemnaWaveService:
                     crypto_link = panel_user.get('subscriptionCryptoLink')
                     if crypto_link and subscription.subscription_crypto_link != crypto_link:
                         subscription.subscription_crypto_link = crypto_link
+                    elif (
+                        not crypto_link
+                        and not subscription.subscription_crypto_link
+                        and settings.is_happ_cryptolink_mode()
+                        and subscription.subscription_url
+                    ):
+                        # Панель не отдаёт crypto-ссылку (Remnawave >=2.8.0 убрал
+                        # свой генератор) — шифруем локально (RSA crypt4, без сети)
+                        try:
+                            encrypted = await api.encrypt_happ_crypto_link(subscription.subscription_url)
+                            if encrypted:
+                                subscription.subscription_crypto_link = encrypted
+                        except Exception as crypto_err:
+                            logger.warning('Не удалось получить happ crypto-ссылку', error=crypto_err)
 
                     # Update squads from panel
                     _panel_squads = panel_user.get('activeInternalSquads', []) or []

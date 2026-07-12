@@ -240,12 +240,30 @@ class RemnaWaveTransientError(RemnaWaveAPIError):
     surfaced by the monitoring service, not by per-request error logs."""
 
 
+# Публичный ключ RSA для happ://crypt4/ — открытый ключ, не секрет (тот же,
+# что в github.com/kastov/cryptohapp). Шифрование локальное, без сети —
+# см. RemnaWaveAPI.encrypt_happ_crypto_link().
+_HAPP_PUBLIC_KEY_V4_PEM = b"""-----BEGIN PUBLIC KEY-----
+MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA3UZ0M3L4K+WjM3vkbQnz
+ozHg/cRbEXvQ6i4A8RVN4OM3rK9kU01FdjyoIgywve8OEKsFnVwERZAQZ1Trv60B
+hmaM76QQEE+EUlIOL9EpwKWGtTL5lYC1sT9XJMNP3/CI0gP5wwQI88cY/xedpOEB
+W72EmOOShHUm/b/3m+HPmqwc4ugKj5zWV5SyiT829aFA5DxSjmIIFBAms7DafmSq
+LFTYIQL5cShDY2u+/sqyAw9yZIOoqW2TFIgIHhLPWek/ocDU7zyOrlu1E0SmcQQb
+LFqHq02fsnH6IcqTv3N5Adb/CkZDDQ6HvQVBmqbKZKf7ZdXkqsc/Zw27xhG7OfXC
+tUmWsiL7zA+KoTd3avyOh93Q9ju4UQsHthL3Gs4vECYOCS9dsXXSHEY/1ngU/hjO
+WFF8QEE/rYV6nA4PTyUvo5RsctSQL/9DJX7XNh3zngvif8LsCN2MPvx6X+zLouBX
+zgBkQ9DFfZAGLWf9TR7KVjZC/3NsuUCDoAOcpmN8pENBbeB0puiKMMWSvll36+2M
+YR1Xs0MgT8Y9TwhE2+TnnTJOhzmHi/BxiUlY/w2E0s4ax9GHAmX0wyF4zeV7kDkc
+vHuEdc0d7vDmdw0oqCqWj0Xwq86HfORu6tm1A8uRATjb4SzjTKclKuoElVAVa5Jo
+oh/uZMozC65SmDw+N5p6Su8CAwEAAQ==
+-----END PUBLIC KEY-----
+"""
+
+
 class RemnaWaveAPI:
-    # Remnawave 2.8.0 удалил POST /api/system/tools/happ/encrypt. Клиент создаётся
-    # на каждый запрос, поэтому флаг доступности happ-encrypt держим на классе: после
-    # первого 404 перестаём звать удалённый эндпоинт (иначе 404 + warning на каждый
-    # вызов get_subscription_info/enrich_user_with_happ_link). Сбрасывается рестартом.
-    _happ_encrypt_unavailable: bool = False
+    # Remnawave 2.8.0 удалил свой POST /api/system/tools/happ/encrypt. Вместо
+    # него encrypt_happ_crypto_link() шифрует happ://crypt4/ локально (RSA,
+    # публичный ключ выше) — без сети, без сторонних сервисов.
 
     def __init__(
         self,
@@ -1388,22 +1406,38 @@ class RemnaWaveAPI:
         return True
 
     async def encrypt_happ_crypto_link(self, link_to_encrypt: str) -> str | None:
-        # Эндпоинт удалён в Remnawave 2.8.0 — после первого 404 больше не дёргаем.
-        if RemnaWaveAPI._happ_encrypt_unavailable:
-            return None
+        """Шифрует ссылку в happ://crypt4/... полностью локально, без сети.
+
+        Remnawave >=2.8.0 удалил собственный POST /api/system/tools/happ/encrypt.
+        Вместо похода к стороннему сервису (crypto.happ.su) шифруем сами: RSA
+        (PKCS1v15) публичным ключом crypt4 — тот же алгоритм и ключ, что в
+        открытой библиотеке github.com/kastov/cryptohapp. Публичный ключ не
+        секрет, шифрование целиком локальное — ссылка пользователя никуда не
+        уходит. crypt5 не используем: его ключевой материал (34 приватных
+        ключа) нигде не публикуется в открытом виде, crypt4 — последняя
+        версия с полностью открытым и проверяемым ключом.
+        """
         try:
-            data = {'linkToEncrypt': link_to_encrypt}
-            response = await self._make_request('POST', '/api/system/tools/happ/encrypt', data)
-            return response.get('response', {}).get('encryptedLink')
-        except RemnaWaveAPIError as e:
-            if e.status_code == 404:
-                RemnaWaveAPI._happ_encrypt_unavailable = True
-                logger.info('happ-encrypt эндпоинт недоступен (удалён в Remnawave 2.8.0) — отключаю до рестарта')
+            from cryptography.hazmat.primitives.asymmetric import padding as _rsa_padding
+            from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+            public_key = load_pem_public_key(_HAPP_PUBLIC_KEY_V4_PEM)
+            data_bytes = link_to_encrypt.encode('utf-8')
+            # PKCS1v15: максимум key_size_bytes-11 на блок (для 4096-бит ключа — 501 байт)
+            max_payload = (public_key.key_size // 8) - 11
+            if len(data_bytes) > max_payload:
+                logger.warning(
+                    'Ссылка подписки слишком длинная для happ crypt4',
+                    length=len(data_bytes),
+                    max_payload=max_payload,
+                )
                 return None
-            logger.warning('Не удалось зашифровать happ ссылку', message=e.message)
-            return None
+            ciphertext = public_key.encrypt(data_bytes, _rsa_padding.PKCS1v15())
+            encoded = base64.b64encode(ciphertext).decode('ascii')
+            encrypted = f'happ://crypt4/{encoded}'
+            return encrypted
         except Exception as e:
-            logger.warning('Ошибка при шифровании happ ссылки', error=e)
+            logger.warning('Ошибка локального шифрования happ-ссылки (crypt4)', error=e)
             return None
 
     async def enrich_user_with_happ_link(self, user: RemnaWaveUser) -> RemnaWaveUser:
