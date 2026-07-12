@@ -43,7 +43,7 @@ from app.utils.pricing_utils import (
     calculate_prorated_price,
 )
 from app.utils.subscription_utils import (
-    get_display_subscription_link,
+    get_display_subscription_crypto_or_plain,
 )
 
 from .common import (
@@ -1743,7 +1743,7 @@ async def handle_device_guide(callback: types.CallbackQuery, db_user: User, db: 
     subscription, sub_id = await _resolve_subscription(callback, db_user, db, state)
     if subscription is None:
         return
-    subscription_link = get_display_subscription_link(subscription)
+    subscription_link = get_display_subscription_crypto_or_plain(subscription)
 
     if not subscription_link:
         await callback.answer(
@@ -1894,7 +1894,7 @@ async def handle_specific_app_guide(
     if subscription is None:
         return
 
-    subscription_link = get_display_subscription_link(subscription)
+    subscription_link = get_display_subscription_crypto_or_plain(subscription)
 
     if not subscription_link:
         await callback.answer(
@@ -1967,7 +1967,7 @@ async def show_device_connection_help(
     subscription, sub_id = await _resolve_subscription(callback, db_user, db, state)
     if subscription is None:
         return
-    subscription_link = get_display_subscription_link(subscription)
+    subscription_link = get_display_subscription_crypto_or_plain(subscription)
 
     if not subscription_link:
         await callback.answer('❌ Ссылка подписки недоступна', show_alert=True)
