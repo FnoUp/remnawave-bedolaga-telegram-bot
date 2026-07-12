@@ -45,6 +45,29 @@ async def cleanup_duplicate_subscriptions(db: AsyncSession) -> int:
     return total_deleted
 
 
+async def apply_remnawave_link_fields(subscription: Subscription, updated_user, api) -> None:
+    """Синхронизирует subscription_url/subscription_crypto_link из ответа панели.
+
+    Remnawave >=2.8.0 не отдаёт crypto-ссылку ни при каких вызовах API (свой
+    happ-encrypt удалён). Без этого фолбэка любой push к панели (продление,
+    ревок ссылки, смена сквадов) затирал бы уже посчитанную локально
+    happ://crypt4/ ссылку пустым значением из ответа панели.
+    """
+    subscription.subscription_url = updated_user.subscription_url
+    panel_crypto_link = getattr(updated_user, 'happ_crypto_link', None)
+    if panel_crypto_link or not settings.is_happ_cryptolink_mode():
+        subscription.subscription_crypto_link = panel_crypto_link
+        return
+    if not subscription.subscription_url:
+        return
+    try:
+        subscription.subscription_crypto_link = (
+            await api.encrypt_happ_crypto_link(subscription.subscription_url) or ''
+        )
+    except Exception as crypto_err:
+        logger.warning('Не удалось получить happ crypto-ссылку', error=crypto_err)
+
+
 def get_display_subscription_link(subscription: Subscription | None) -> str | None:
     if not subscription:
         return None

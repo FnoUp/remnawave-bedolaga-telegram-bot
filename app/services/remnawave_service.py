@@ -35,6 +35,7 @@ from app.external.remnawave_api import (
 )
 from app.services.subscription_service import get_traffic_reset_strategy
 from app.utils.subscription_utils import (
+    apply_remnawave_link_fields,
     coerce_panel_device_limit,
     device_limit_needs_heal,
     resolve_hwid_device_limit_for_payload,
@@ -3317,8 +3318,7 @@ class RemnaWaveService:
                                     rw_user = await api.get_user_by_uuid(_lookup_uuid)
                                     if rw_user:
                                         subscription.remnawave_short_uuid = rw_user.short_uuid
-                                        subscription.subscription_url = rw_user.subscription_url
-                                        subscription.subscription_crypto_link = rw_user.happ_crypto_link
+                                        await apply_remnawave_link_fields(subscription, rw_user, api)
                                         logger.info(
                                             '🔧 Восстановлены данные Remnawave для пользователя',
                                             telegram_id=user.telegram_id,

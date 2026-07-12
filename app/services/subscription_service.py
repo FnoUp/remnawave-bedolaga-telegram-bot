@@ -13,6 +13,7 @@ from app.database.crud.user import get_user_by_id
 from app.database.models import Subscription, SubscriptionStatus, User
 from app.external.remnawave_api import RemnaWaveAPI, RemnaWaveAPIError, RemnaWaveUser, TrafficLimitStrategy, UserStatus
 from app.utils.subscription_utils import (
+    apply_remnawave_link_fields,
     resolve_hwid_device_limit_for_payload,
 )
 
@@ -211,8 +212,7 @@ class SubscriptionService:
                     )
 
                 subscription.remnawave_short_uuid = updated_user.short_uuid
-                subscription.subscription_url = updated_user.subscription_url
-                subscription.subscription_crypto_link = updated_user.happ_crypto_link
+                await apply_remnawave_link_fields(subscription, updated_user, api)
                 subscription.remnawave_uuid = updated_user.uuid
                 # Legacy field — keep in sync for single-mode backward compat
                 if not settings.is_multi_tariff_enabled():
@@ -528,8 +528,7 @@ class SubscriptionService:
                             reset_reason,
                         )
 
-                subscription.subscription_url = updated_user.subscription_url
-                subscription.subscription_crypto_link = updated_user.happ_crypto_link
+                await apply_remnawave_link_fields(subscription, updated_user, api)
                 await db.commit()
 
                 status_text = 'активным' if is_actually_active else 'истёкшим'
@@ -672,8 +671,7 @@ class SubscriptionService:
                 updated_user = await api.revoke_user_subscription(revoke_uuid)
 
                 subscription.remnawave_short_uuid = updated_user.short_uuid
-                subscription.subscription_url = updated_user.subscription_url
-                subscription.subscription_crypto_link = updated_user.happ_crypto_link
+                await apply_remnawave_link_fields(subscription, updated_user, api)
                 await db.commit()
 
                 logger.info('✅ Обновлена ссылка подписки', _format_user_log=self._format_user_log(user))
@@ -1061,8 +1059,7 @@ class SubscriptionService:
                         updated_user = await api.update_user(**update_kwargs)
 
                         # Сохраняем в памяти — commit будет после gather
-                        sub.subscription_url = updated_user.subscription_url
-                        sub.subscription_crypto_link = updated_user.happ_crypto_link
+                        await apply_remnawave_link_fields(sub, updated_user, api)
                         return True
 
                     except Exception as e:
