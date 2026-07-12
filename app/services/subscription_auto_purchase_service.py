@@ -844,10 +844,16 @@ async def _auto_purchase_tariff(
 
     user = await lock_user_for_pricing(db, user.id)
 
+    # Множественные параллельные платные подписки одного тарифа разрешены —
+    # продлеваем на месте только при апгрейде активного ТРИАЛА этого тарифа.
+    will_extend = bool(
+        existing_subscription
+        and existing_subscription.tariff_id == tariff_id
+        and (existing_subscription.is_trial if settings.is_multi_tariff_enabled() else True)
+    )
+
     # Calculate price via PricingEngine (single source of truth)
-    device_limit = None
-    if existing_subscription and existing_subscription.tariff_id == tariff_id:
-        device_limit = existing_subscription.device_limit
+    device_limit = existing_subscription.device_limit if will_extend else None
 
     result = await pricing_engine.calculate_tariff_purchase_price(
         tariff,
@@ -904,13 +910,11 @@ async def _auto_purchase_tariff(
         squads = [s.squad_uuid for s in all_servers if s.squad_uuid]
 
     try:
-        if existing_subscription:
-            # Продлеваем существующую подписку
-            # Сохраняем докупленные устройства при продлении того же тарифа
-            if existing_subscription.tariff_id == tariff.id:
-                effective_device_limit = max(tariff.device_limit or 0, existing_subscription.device_limit or 0)
-            else:
-                effective_device_limit = tariff.device_limit
+        if will_extend:
+            # Апгрейд активного триала того же тарифа на месте — единственный
+            # случай продления в multi-tariff режиме. Платные дубликаты
+            # тарифа всегда создают новую подписку (см. will_extend выше).
+            effective_device_limit = max(tariff.device_limit or 0, existing_subscription.device_limit or 0)
             subscription = await extend_subscription(
                 db,
                 existing_subscription,
@@ -926,6 +930,32 @@ async def _auto_purchase_tariff(
                 subscription.status = 'active'
                 await db.commit()
         else:
+            if settings.is_multi_tariff_enabled():
+                from app.database.crud.subscription import get_active_subscriptions_by_user_id
+
+                active_count = len(await get_active_subscriptions_by_user_id(db, user.id))
+                if active_count >= settings.get_max_active_subscriptions():
+                    from app.database.crud.user import add_user_balance
+
+                    await add_user_balance(
+                        db,
+                        user,
+                        final_price,
+                        'Возврат: превышен лимит подписок',
+                        create_transaction=True,
+                        transaction_type=TransactionType.REFUND,
+                    )
+                    if consume_promo and saved_promo_percent > 0:
+                        user.promo_offer_discount_percent = saved_promo_percent
+                        user.promo_offer_discount_source = saved_promo_source
+                        user.promo_offer_discount_expires_at = saved_promo_expires
+                        await db.commit()
+                    logger.warning(
+                        '🔁 Автопокупка тарифа: превышен лимит подписок',
+                        format_user_id=_format_user_id(user),
+                    )
+                    return False
+
             # Создаём новую подписку
             subscription = await create_paid_subscription(
                 db=db,
@@ -1035,7 +1065,7 @@ async def _auto_purchase_tariff(
                 transaction,
                 period_days,
                 was_trial_conversion,
-                purchase_type='renewal',
+                purchase_type='renewal' if will_extend else 'first_purchase',
             )
         )
     except Exception as error:
@@ -1102,7 +1132,7 @@ async def _auto_purchase_tariff(
 
     # Send WebSocket notification to cabinet frontend
     try:
-        if existing_subscription:
+        if will_extend:
             # Renewal of existing subscription
             await notify_user_subscription_renewed(
                 user_id=user.id,

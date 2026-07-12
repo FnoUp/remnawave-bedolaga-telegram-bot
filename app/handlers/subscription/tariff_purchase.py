@@ -653,8 +653,12 @@ async def select_tariff(
         await callback.answer('Тариф недоступен', show_alert=True)
         return
 
-    # В мульти-тарифе проверяем не куплен ли уже этот тариф
-    if settings.is_multi_tariff_enabled():
+    # Суточные тарифы продлеваются перезаписью на месте (не через
+    # create_paid_subscription) — параллельные копии для них не поддержаны,
+    # поэтому повторная покупка того же суточного тарифа по-прежнему
+    # блокируется. Периодные/custom тарифы теперь разрешают несколько
+    # параллельных активных подписок одного тарифа (см. confirm_tariff_purchase).
+    if settings.is_multi_tariff_enabled() and getattr(tariff, 'is_daily', False):
         from app.database.crud.subscription import get_active_subscriptions_by_user_id
 
         _active = await get_active_subscriptions_by_user_id(db, db_user.id)
@@ -1037,14 +1041,19 @@ async def handle_custom_confirm(
     else:
         existing_subscription = await get_subscription_by_user_id(db, db_user.id)
 
+    # Множественные параллельные платные подписки одного тарифа разрешены —
+    # продлеваем на месте только при апгрейде активного ТРИАЛА этого тарифа.
+    will_extend = bool(
+        existing_subscription
+        and existing_subscription.tariff_id == tariff.id
+        and (existing_subscription.is_trial if settings.is_multi_tariff_enabled() else True)
+    )
+
     try:
-        if existing_subscription:
+        if will_extend:
             # Продлеваем существующую подписку и обновляем параметры тарифа
             # Сохраняем докупленные устройства при продлении того же тарифа
-            if existing_subscription.tariff_id == tariff.id:
-                effective_device_limit = max(tariff.device_limit or 0, existing_subscription.device_limit or 0)
-            else:
-                effective_device_limit = tariff.device_limit
+            effective_device_limit = max(tariff.device_limit or 0, existing_subscription.device_limit or 0)
             subscription = await extend_subscription(
                 db,
                 existing_subscription,
@@ -1055,6 +1064,41 @@ async def handle_custom_confirm(
                 connected_squads=squads,
             )
         else:
+            if settings.is_multi_tariff_enabled():
+                # Guard: enforce MAX_ACTIVE_SUBSCRIPTIONS limit
+                active_count = len(await get_active_subscriptions_by_user_id(db, db_user.id))
+                if active_count >= settings.get_max_active_subscriptions():
+                    from app.database.crud.user import add_user_balance
+
+                    refund_success = await add_user_balance(
+                        db,
+                        db_user,
+                        total_price,
+                        'Возврат: превышен лимит подписок',
+                        create_transaction=True,
+                        transaction_type=TransactionType.REFUND,
+                        commit=False,
+                    )
+                    if not refund_success:
+                        await _persist_failed_refund(
+                            user_id=db_user.id,
+                            amount_kopeks=total_price,
+                            reason='Возврат: превышен лимит подписок',
+                            error=Exception('add_user_balance returned False'),
+                        )
+                    if consume_promo and saved_promo_percent > 0:
+                        db_user.promo_offer_discount_percent = saved_promo_percent
+                        db_user.promo_offer_discount_source = saved_promo_source
+                        db_user.promo_offer_discount_expires_at = saved_promo_expires
+                    await db.commit()
+                    try:
+                        await callback.message.edit_text(
+                            f'❌ Максимум подписок: {settings.get_max_active_subscriptions()}'
+                        )
+                    except Exception:
+                        pass
+                    return
+
             # Создаем новую подписку
             subscription = await create_paid_subscription(
                 db=db,
@@ -1159,9 +1203,9 @@ async def handle_custom_confirm(
                 subscription,
                 None,
                 custom_days,
-                was_trial_conversion=False,
+                was_trial_conversion=will_extend if settings.is_multi_tariff_enabled() else False,
                 amount_kopeks=total_price,
-                purchase_type='renewal' if existing_subscription else 'first_purchase',
+                purchase_type='renewal' if will_extend else 'first_purchase',
             )
         except Exception as e:
             logger.error('Ошибка отправки уведомления админу', error=e)
@@ -1368,26 +1412,11 @@ async def select_tariff_period(
             parse_mode='HTML',
         )
 
-    # Resolve target subscription_id at preview time and pin it in FSM.
-    # Without this, ``confirm_tariff_purchase`` re-queries by
-    # ``(user_id, tariff_id)`` and can race with concurrent panel
-    # webhooks that briefly flip the active sub's status — falling
-    # through to ``create_paid_subscription`` and hitting the partial
-    # UNIQUE ``uq_subscriptions_user_tariff_active`` (logs "Тариф уже
-    # активен", refunds, leaves user confused).
-    target_subscription_id: int | None = None
-    if settings.is_multi_tariff_enabled():
-        from app.database.crud.subscription import get_subscription_by_user_and_tariff
-
-        _existing_sub = await get_subscription_by_user_and_tariff(db, db_user.id, tariff_id)
-        target_subscription_id = _existing_sub.id if _existing_sub else None
-
     await state.update_data(
         selected_tariff_id=tariff_id,
         selected_period=period,
         final_price=final_price,
         tariff_discount_percent=discount_percent,
-        target_subscription_id=target_subscription_id,
     )
     await callback.answer()
 
@@ -1422,48 +1451,29 @@ async def confirm_tariff_purchase(
     # Calculate price via PricingEngine (single source of truth)
     from app.services.pricing_engine import pricing_engine
 
-    # In multi-tariff mode, prefer the subscription_id pinned in FSM at
-    # preview time — that's the EXACT row the user clicked Renew/Buy on.
-    # Re-querying by ``(user_id, tariff_id)`` here is race-vulnerable:
-    # if a concurrent panel webhook briefly flips the active sub's
-    # status between preview and confirm, this query returns None,
-    # the code falls through to ``create_paid_subscription``, and the
-    # partial UNIQUE ``uq_subscriptions_user_tariff_active`` raises
-    # IntegrityError → user sees "Тариф уже активен" in logs, money
-    # debited then refunded, subscription not extended.
-    #
-    # We fall back to the tariff-level lookup only if FSM has no
-    # pinned ID (old session / direct deep-link / state lost) so
-    # legacy flows continue to work.
+    # Множественные параллельные платные подписки одного тарифа разрешены —
+    # мы больше не пытаемся угадать/запинить "целевую" подписку для продления.
+    # Продление на месте происходит только при апгрейде активного ТРИАЛА того
+    # же тарифа (см. will_extend ниже); во всех остальных случаях
+    # create_paid_subscription() сам решает revive-if-expired/create-if-not.
     if settings.is_multi_tariff_enabled():
         from app.database.crud.subscription import get_subscription_by_user_and_tariff
 
-        _state_data = await state.get_data() if state else {}
-        _pinned_sub_id = _state_data.get('target_subscription_id')
-
-        existing_sub = None
-        if _pinned_sub_id:
-            existing_sub = await get_subscription_by_id_for_user(db, int(_pinned_sub_id), db_user.id)
-            # Defence: if admin/user switched tariff between preview
-            # and confirm, the pinned sub may no longer match —
-            # ignore it and fall back to fresh tariff lookup.
-            if existing_sub and existing_sub.tariff_id != tariff_id:
-                logger.warning(
-                    'FSM-pinned subscription tariff diverged from confirm tariff; falling back',
-                    pinned_sub_id=_pinned_sub_id,
-                    pinned_tariff_id=existing_sub.tariff_id,
-                    confirm_tariff_id=tariff_id,
-                    user_id=db_user.id,
-                )
-                existing_sub = None
-        if existing_sub is None:
-            existing_sub = await get_subscription_by_user_and_tariff(db, db_user.id, tariff_id)
+        existing_sub = await get_subscription_by_user_and_tariff(db, db_user.id, tariff_id)
     else:
         existing_sub = await get_subscription_by_user_id(db, db_user.id)
 
-    device_limit = None
-    if existing_sub and existing_sub.tariff_id == tariff.id:
-        device_limit = existing_sub.device_limit
+    will_extend = bool(
+        existing_sub
+        and existing_sub.tariff_id == tariff.id
+        and (existing_sub.is_trial if settings.is_multi_tariff_enabled() else True)
+    )
+
+    # Наследуем device_limit для прайсинга только когда реально будем
+    # продлевать существующую подписку — иначе пользователя ошибочно
+    # посчитают/спишут за докупленные на СТАРОЙ подписке устройства,
+    # которых на новой независимой подписке не будет.
+    device_limit = existing_sub.device_limit if will_extend else None
 
     result = await pricing_engine.calculate_tariff_purchase_price(
         tariff,
@@ -1532,8 +1542,10 @@ async def confirm_tariff_purchase(
 
     try:
         if settings.is_multi_tariff_enabled():
-            if existing_subscription and existing_subscription.tariff_id == tariff.id:
-                # Extend existing subscription for this tariff
+            if will_extend:
+                # Апгрейд активного триала того же тарифа на месте — единственный
+                # случай продления в multi-tariff режиме (см. will_extend выше).
+                # Платные дубликаты тарифа всегда создают новую подписку.
                 effective_device_limit = max(tariff.device_limit or 0, existing_subscription.device_limit or 0)
                 subscription = await extend_subscription(
                     db,
@@ -1764,9 +1776,9 @@ async def confirm_tariff_purchase(
             subscription,
             None,  # Транзакция отсутствует, оплата с баланса
             period,
-            was_trial_conversion=False,
+            was_trial_conversion=will_extend if settings.is_multi_tariff_enabled() else False,
             amount_kopeks=final_price,
-            purchase_type='renewal' if existing_subscription else 'first_purchase',
+            purchase_type='renewal' if (existing_subscription and will_extend) else 'first_purchase',
         )
     except Exception as e:
         logger.error('Ошибка отправки уведомления админу', error=e)
@@ -4594,13 +4606,19 @@ async def return_to_saved_tariff_cart(
     # Баланс достаточен - показываем подтверждение
     discount_percent = cart_data.get('discount_percent', 0)
 
-    # Pin FSM keys read by confirm_tariff_purchase before showing the
-    # confirm keyboard. Without this, the cart-restore-after-topup path
-    # bypasses select_tariff_period (the normal preview) and confirm
-    # falls back to the race-vulnerable (user_id, tariff_id) lookup —
-    # which is exactly the scenario that produced the user-reported
-    # "Тариф уже активен" bug in the cart-restore flow.
-    if cart_mode in ('tariff_purchase', 'extend'):
+    # Pin FSM keys for the cart-restore-after-topup path, bypassing the
+    # normal select_tariff_period preview. confirm_tariff_purchase no longer
+    # reads target_subscription_id (multi-tariff buy always resolves fresh —
+    # see will_extend there), so only 'extend' cart mode still needs the pin.
+    if cart_mode == 'tariff_purchase':
+        _period_for_pin = cart_data.get('period_days', 30)
+        await state.update_data(
+            selected_tariff_id=tariff_id,
+            selected_period=_period_for_pin,
+            final_price=total_price,
+            tariff_discount_percent=discount_percent,
+        )
+    elif cart_mode == 'extend':
         _period_for_pin = cart_data.get('period_days', 30)
         await state.update_data(
             selected_tariff_id=tariff_id,
