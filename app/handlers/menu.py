@@ -569,38 +569,51 @@ async def show_faq_pages(
     await callback.answer()
 
 
-def _connection_guide_intro_keyboard(texts) -> types.InlineKeyboardMarkup:
-    return types.InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                types.InlineKeyboardButton(
-                    text=texts.t('CONNECTION_GUIDE_READ_ARTICLE', '📖 Подробная инструкция'),
-                    url=settings.CONNECTION_GUIDE_URL,
-                )
-            ],
+def _is_video_file(path: str) -> bool:
+    return path.lower().endswith(('.mp4', '.mov', '.mkv', '.webm'))
+
+
+def _connection_guide_intro_keyboard(texts, *, with_media_button: bool) -> types.InlineKeyboardMarkup:
+    rows = [
+        [
+            types.InlineKeyboardButton(
+                text=texts.t('CONNECTION_GUIDE_READ_ARTICLE', '📖 Подробная инструкция'),
+                url=settings.CONNECTION_GUIDE_URL,
+            )
+        ]
+    ]
+    if with_media_button:
+        rows.append(
             [
                 types.InlineKeyboardButton(
                     text=texts.t('CONNECTION_GUIDE_VIDEO_BUTTON', '🎥 Видео: смена региона (Канада)'),
                     callback_data='connection_guide_media',
                 )
-            ],
-            [types.InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')],
-        ]
-    )
+            ]
+        )
+    rows.append([types.InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _connection_guide_intro_text(texts) -> str:
+def _connection_guide_intro_text(texts, *, has_media: bool) -> str:
+    if has_media:
+        return texts.t(
+            'CONNECTION_GUIDE_CAPTION_WITH_MEDIA',
+            '🎥 <b>Как подключиться</b>\n\n'
+            'Смотрите скрин-инструкцию выше.\n'
+            'Подробные шаги (установка Happ, смена региона App Store) — в статье по кнопке.',
+        )
     return texts.t(
         'CONNECTION_GUIDE_CAPTION',
         '🎥 <b>Как подключиться</b>\n\n'
         'Разберитесь за 2 минуты:\n'
         '• «📖 Подробная инструкция» — установка Happ, смена региона App Store, кнопки приложения\n'
-        '• «🎥 Видео: смена региона» — короткая видео/скрин-инструкция',
+        '• «🎥 Видео: смена региона» — короткая видео-инструкция',
     )
 
 
 async def send_connection_guide_intro(bot: Bot, chat_id: int, language: str) -> None:
-    """Публичная точка входа: шлёт вводное сообщение гайда (2 кнопки).
+    """Публичная точка входа: шлёт гайд (картинка сразу + статья, либо видео по кнопке).
 
     Используется и кнопкой меню, и хендлерами покупки подписки (после
     первой успешной покупки) — единая логика, единое место правки.
@@ -608,13 +621,26 @@ async def send_connection_guide_intro(bot: Bot, chat_id: int, language: str) -> 
     if not settings.is_connection_guide_enabled():
         return
     texts = get_texts(language)
+    media_path = settings.CONNECTION_GUIDE_VIDEO_PATH
+
     try:
-        await bot.send_message(
-            chat_id,
-            _connection_guide_intro_text(texts),
-            parse_mode='HTML',
-            reply_markup=_connection_guide_intro_keyboard(texts),
-        )
+        if media_path and not _is_video_file(media_path):
+            # Скриншот — показываем сразу, без лишнего тапа
+            await bot.send_photo(
+                chat_id,
+                types.FSInputFile(media_path),
+                caption=_connection_guide_intro_text(texts, has_media=True),
+                parse_mode='HTML',
+                reply_markup=_connection_guide_intro_keyboard(texts, with_media_button=False),
+            )
+        else:
+            # Видео (или медиа ещё нет) — по кнопке, чтобы не грузить тяжёлый файл сразу
+            await bot.send_message(
+                chat_id,
+                _connection_guide_intro_text(texts, has_media=False),
+                parse_mode='HTML',
+                reply_markup=_connection_guide_intro_keyboard(texts, with_media_button=bool(media_path)),
+            )
     except Exception as e:
         logger.error('Не удалось отправить гайд после покупки', error=e, chat_id=chat_id)
 
@@ -623,7 +649,7 @@ async def show_connection_guide(
     callback: types.CallbackQuery,
     db_user: User,
 ):
-    """Гайд «Как подключиться» из главного меню: вводное сообщение с 2 кнопками."""
+    """Гайд «Как подключиться» из главного меню."""
     texts = get_texts(db_user.language if db_user else settings.DEFAULT_LANGUAGE)
 
     if not settings.is_connection_guide_enabled():
@@ -633,10 +659,24 @@ async def show_connection_guide(
         return
 
     await callback.answer()
+    media_path = settings.CONNECTION_GUIDE_VIDEO_PATH
+
+    if media_path and not _is_video_file(media_path):
+        try:
+            await callback.message.answer_photo(
+                types.FSInputFile(media_path),
+                caption=_connection_guide_intro_text(texts, has_media=True),
+                parse_mode='HTML',
+                reply_markup=_connection_guide_intro_keyboard(texts, with_media_button=False),
+            )
+            return
+        except Exception as e:
+            logger.error('Не удалось отправить скриншот гайда', error=e, path=media_path)
+
     await callback.message.answer(
-        _connection_guide_intro_text(texts),
+        _connection_guide_intro_text(texts, has_media=False),
         parse_mode='HTML',
-        reply_markup=_connection_guide_intro_keyboard(texts),
+        reply_markup=_connection_guide_intro_keyboard(texts, with_media_button=bool(media_path)),
     )
 
 
