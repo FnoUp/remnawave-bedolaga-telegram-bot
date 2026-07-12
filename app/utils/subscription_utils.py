@@ -55,7 +55,7 @@ async def apply_remnawave_link_fields(subscription: Subscription, updated_user, 
     """
     subscription.subscription_url = updated_user.subscription_url
     panel_crypto_link = getattr(updated_user, 'happ_crypto_link', None)
-    if panel_crypto_link or not settings.is_happ_cryptolink_mode():
+    if panel_crypto_link:
         subscription.subscription_crypto_link = panel_crypto_link
         return
     if not subscription.subscription_url:
@@ -66,6 +66,19 @@ async def apply_remnawave_link_fields(subscription: Subscription, updated_user, 
         )
     except Exception as crypto_err:
         logger.warning('Не удалось получить happ crypto-ссылку', error=crypto_err)
+
+
+def get_display_subscription_crypto_or_plain(subscription: Subscription | None) -> str | None:
+    """Ссылка для отображения ТЕКСТОМ пользователю: всегда предпочитает
+    зашифрованную happ://crypt4/, если она посчитана — независимо от
+    CONNECT_BUTTON_MODE. Кнопка «Подключиться» (WebApp) продолжает
+    использовать обычную subscription_url — Telegram WebApp не может
+    открыть кастомную схему happ://.
+    """
+    if not subscription:
+        return None
+    crypto_link = getattr(subscription, 'subscription_crypto_link', None)
+    return crypto_link or getattr(subscription, 'subscription_url', None)
 
 
 def get_display_subscription_link(subscription: Subscription | None) -> str | None:

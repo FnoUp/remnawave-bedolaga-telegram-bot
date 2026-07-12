@@ -2067,7 +2067,7 @@ class RemnaWaveService:
 
                         _new_sub_url = panel_user.get('subscriptionUrl', '')
                         _new_crypto_link = panel_user.get('subscriptionCryptoLink', '')
-                        if not _new_crypto_link and settings.is_happ_cryptolink_mode() and _new_sub_url:
+                        if not _new_crypto_link and _new_sub_url:
                             try:
                                 _new_crypto_link = await api.encrypt_happ_crypto_link(_new_sub_url) or ''
                             except Exception as crypto_err:
@@ -2129,7 +2129,6 @@ class RemnaWaveService:
                     elif (
                         not crypto_link
                         and not subscription.subscription_crypto_link
-                        and settings.is_happ_cryptolink_mode()
                         and subscription.subscription_url
                     ):
                         # Панель не отдаёт crypto-ссылку (Remnawave >=2.8.0 убрал

@@ -111,6 +111,7 @@ from app.utils.pricing_utils import (
     format_period_description,
 )
 from app.utils.subscription_utils import (
+    get_display_subscription_crypto_or_plain,
     get_display_subscription_link,
     resolve_simple_subscription_device_limit,
 )
@@ -567,12 +568,12 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     hide_subscription_link = settings.should_hide_subscription_link()
 
     if subscription_link and actual_status in ['trial_active', 'paid_active'] and not hide_subscription_link:
-        subscription_link_display = subscription_link
+        subscription_link_text = get_display_subscription_crypto_or_plain(subscription)
 
-        if settings.is_happ_cryptolink_mode():
-            subscription_link_display = f'<blockquote expandable><code>{subscription_link}</code></blockquote>'
+        if subscription_link_text and subscription_link_text.startswith('happ://'):
+            subscription_link_display = f'<blockquote expandable><code>{subscription_link_text}</code></blockquote>'
         else:
-            subscription_link_display = f'<code>{subscription_link}</code>'
+            subscription_link_display = f'<code>{subscription_link_text}</code>'
 
         message += '\n\n' + texts.t(
             'SUBSCRIPTION_CONNECT_LINK_SECTION',
@@ -1101,6 +1102,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
             logger.error('Ошибка отправки уведомления о триале', error=e)
 
         subscription_link = get_display_subscription_link(subscription)
+        subscription_link_text = get_display_subscription_crypto_or_plain(subscription)
         hide_subscription_link = settings.should_hide_subscription_link()
 
         payment_note = ''
@@ -1141,7 +1143,7 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
                 subscription_import_link = texts.t(
                     'SUBSCRIPTION_IMPORT_LINK_SECTION',
                     '🔗 <b>Ваша ссылка для импорта в VPN приложение:</b>\n<code>{subscription_url}</code>',
-                ).format(subscription_url=subscription_link)
+                ).format(subscription_url=subscription_link_text)
 
                 trial_success_text = (
                     f'{texts.TRIAL_ACTIVATED}\n\n'
@@ -2665,6 +2667,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
         await db.refresh(subscription)
 
         subscription_link = get_display_subscription_link(subscription)
+        subscription_link_text = get_display_subscription_crypto_or_plain(subscription)
         hide_subscription_link = settings.should_hide_subscription_link()
 
         discount_note = ''
@@ -2708,7 +2711,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                 import_link_section = texts.t(
                     'SUBSCRIPTION_IMPORT_LINK_SECTION',
                     '🔗 <b>Ваша ссылка для импорта в VPN приложение:</b>\\n<code>{subscription_url}</code>',
-                ).format(subscription_url=subscription_link)
+                ).format(subscription_url=subscription_link_text)
 
                 success_text = (
                     f'{texts.SUBSCRIPTION_PURCHASED}\n\n'
@@ -3427,6 +3430,7 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
 
         # Показываем успешное сообщение с ссылкой
         subscription_link = get_display_subscription_link(subscription)
+        subscription_link_text = get_display_subscription_crypto_or_plain(subscription)
         hide_subscription_link = settings.should_hide_subscription_link()
 
         payment_note = '\n\n' + texts.t(
@@ -3465,7 +3469,7 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
                 subscription_import_link = texts.t(
                     'SUBSCRIPTION_IMPORT_LINK_SECTION',
                     '🔗 <b>Ваша ссылка для импорта в VPN приложение:</b>\n<code>{subscription_url}</code>',
-                ).format(subscription_url=subscription_link)
+                ).format(subscription_url=subscription_link_text)
 
                 trial_success_text = (
                     f'{texts.TRIAL_ACTIVATED}\n\n'
