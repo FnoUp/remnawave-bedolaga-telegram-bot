@@ -29,14 +29,35 @@ logger = structlog.get_logger(__name__)
 router = Router()
 
 
-def _display_tariff_name(sub, *, fallback: str = 'Подписка') -> str:
+def _display_tariff_name(sub, *, fallback: str = 'Подписка', suffix: str = '') -> str:
     """Название подписки для отображения. Триал не привязан к тарифу —
-    показываем «Пробная подписка», а не голое «Подписка»."""
+    показываем «Пробная подписка», а не голое «Подписка». suffix — номер
+    вхождения (" 1", " 2", ...) когда у пользователя несколько параллельных
+    подписок одного тарифа, см. _compute_tariff_occurrence_labels()."""
     if sub.tariff:
-        return sub.tariff.name
+        return f'{sub.tariff.name}{suffix}'
     if getattr(sub, 'is_trial', False):
         return 'Пробная подписка'
     return fallback
+
+
+def _compute_tariff_occurrence_labels(subscriptions: list) -> dict:
+    """{subscription.id: ' N'} для тарифов, встречающихся у пользователя больше
+    одного раза (несколько параллельных подписок одного тарифа) — «Премиум 1»,
+    «Премиум 2» и т.д., в порядке покупки (по id). Уникальные тарифы и триалы
+    не нумеруются (пустая строка)."""
+    by_tariff: dict[int, list] = {}
+    for sub in subscriptions:
+        if sub.tariff_id and not getattr(sub, 'is_trial', False):
+            by_tariff.setdefault(sub.tariff_id, []).append(sub)
+
+    labels: dict[int, str] = {}
+    for subs in by_tariff.values():
+        if len(subs) < 2:
+            continue
+        for i, sub in enumerate(sorted(subs, key=lambda s: s.id), 1):
+            labels[sub.id] = f' {i}'
+    return labels
 
 
 def _status_emoji(sub) -> str:
@@ -61,9 +82,9 @@ def _status_label(sub) -> str:
     return ''
 
 
-def _format_subscription_line(sub, idx: int) -> str:
+def _format_subscription_line(sub, idx: int, suffix: str = '') -> str:
     """Format a single subscription for the list view."""
-    tariff_name = _display_tariff_name(sub)
+    tariff_name = _display_tariff_name(sub, suffix=suffix)
     emoji = _status_emoji(sub)
     label = _status_label(sub)
 
@@ -91,9 +112,10 @@ def _format_subscription_line(sub, idx: int) -> str:
 
 def _build_subscriptions_keyboard(subscriptions: list, language: str) -> types.InlineKeyboardMarkup:
     """Build inline keyboard with per-subscription management buttons."""
+    labels = _compute_tariff_occurrence_labels(subscriptions)
     buttons = []
     for idx, sub in enumerate(subscriptions, 1):
-        tariff_name = _display_tariff_name(sub, fallback=f'Подписка #{sub.id}')
+        tariff_name = _display_tariff_name(sub, fallback=f'Подписка #{sub.id}', suffix=labels.get(sub.id, ''))
         buttons.append(
             [
                 types.InlineKeyboardButton(
@@ -181,9 +203,10 @@ async def show_my_subscriptions(
             ]
         )
     else:
+        labels = _compute_tariff_occurrence_labels(subscriptions)
         lines = ['📋 <b>Мои подписки</b>\n']
         for idx, sub in enumerate(subscriptions, 1):
-            lines.append(_format_subscription_line(sub, idx))
+            lines.append(_format_subscription_line(sub, idx, suffix=labels.get(sub.id, '')))
             lines.append('')  # empty line between subscriptions
         text = '\n'.join(lines)
         keyboard = _build_subscriptions_keyboard(subscriptions, db_user.language)
@@ -216,7 +239,9 @@ async def show_subscription_detail(
     # (e.g. 'subscription_autopay') can resolve the right subscription via FSM.
     await state.update_data(active_subscription_id=sub_id)
 
-    tariff_name = _display_tariff_name(subscription)
+    all_subs = await get_all_subscriptions_by_user_id(db, db_user.id)
+    suffix = _compute_tariff_occurrence_labels(all_subs).get(sub_id, '')
+    tariff_name = _display_tariff_name(subscription, suffix=suffix)
 
     # Traffic
     if subscription.traffic_limit_gb == 0:
@@ -414,7 +439,9 @@ async def handle_subscription_delete_confirm(
         await callback.answer('Можно удалить только истекшую или отключённую подписку', show_alert=True)
         return
 
-    tariff_name = _display_tariff_name(subscription)
+    all_subs = await get_all_subscriptions_by_user_id(db, db_user.id)
+    suffix = _compute_tariff_occurrence_labels(all_subs).get(sub_id, '')
+    tariff_name = _display_tariff_name(subscription, suffix=suffix)
 
     text = (
         f'🗑 <b>Удалить подписку «{tariff_name}»?</b>\n\n'

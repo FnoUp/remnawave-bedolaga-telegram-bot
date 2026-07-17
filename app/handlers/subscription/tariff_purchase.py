@@ -2251,6 +2251,18 @@ async def show_tariff_extend(
         else:
             active_subs = await get_active_subscriptions_by_user_id(db, db_user.id)
             if len(active_subs) > 1:
+                # Нумеруем повторяющиеся тарифы («Премиум 1», «Премиум 2»), чтобы
+                # подписки одного тарифа не выглядели неотличимо в списке выбора.
+                _by_tariff: dict[int, list] = {}
+                for _s in active_subs:
+                    if _s.tariff_id:
+                        _by_tariff.setdefault(_s.tariff_id, []).append(_s)
+                _occurrence_suffix: dict[int, str] = {}
+                for _subs in _by_tariff.values():
+                    if len(_subs) > 1:
+                        for _i, _s in enumerate(sorted(_subs, key=lambda s: s.id), 1):
+                            _occurrence_suffix[_s.id] = f' {_i}'
+
                 # Show subscription picker for extending
                 keyboard = []
                 for sub in sorted(active_subs, key=lambda s: s.id):
@@ -2258,6 +2270,7 @@ async def show_tariff_extend(
                     if sub.tariff_id:
                         _t = await get_tariff_by_id(db, sub.tariff_id)
                         tariff_name = _t.name if _t else f'#{sub.id}'
+                        tariff_name += _occurrence_suffix.get(sub.id, '')
                     else:
                         tariff_name = f'Подписка #{sub.id}'
                     days_left = max(0, (sub.end_date - datetime.now(UTC)).days) if sub.end_date else 0
