@@ -154,6 +154,9 @@ def _build_subscription_detail_keyboard(sub_id: int, sub=None) -> types.InlineKe
     buttons = []
 
     if not is_inactive:
+        open_link = get_display_subscription_crypto_or_plain(sub) if sub else None
+        if open_link:
+            buttons.append([types.InlineKeyboardButton(text='📲 Открыть в Happ', url=open_link)])
         buttons.append([types.InlineKeyboardButton(text='🔗 Ссылка подключения', callback_data=f'sl:{sub_id}')])
 
     buttons.append([types.InlineKeyboardButton(text='🔄 Продлить', callback_data=f'se:{sub_id}')])
