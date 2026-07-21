@@ -297,11 +297,6 @@ async def handle_open_subscription_link(
                 '▶️ Нажмите кнопку "Подключиться" ниже, чтобы открыть Happ и добавить подписку автоматически.',
             )
 
-        happ_message += '\n\n' + texts.t(
-            'SUBSCRIPTION_HAPP_CRYPTOLINK_BLOCK',
-            '<blockquote expandable><code>{crypto_link}</code></blockquote>',
-        ).format(crypto_link=subscription_link)
-
         keyboard = get_happ_cryptolink_keyboard(
             subscription_link,
             db_user.language,
