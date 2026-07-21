@@ -400,6 +400,6 @@ async def get_subscription_info_text(subscription, texts, db_user, db: AsyncSess
                 info_text += f'\n  {bar} {progress_percent:.0f}% | до {expire_date}'
 
     if subscription_url and subscription_url != 'Генерируется...' and not settings.should_hide_subscription_link():
-        info_text += f'\n\n🔗 <b>Ваша ссылка для импорта в VPN приложениe:</b>\n<code>{subscription_url}</code>'
+        info_text += f'\n\n🔗 <a href="{subscription_url}">Ссылка для подключения</a>'
 
     return info_text
