@@ -21,7 +21,6 @@ from app.database.crud.subscription import (
 from app.database.models import Subscription, SubscriptionStatus, User
 from app.localization.texts import get_texts
 from app.services.subscription_service import SubscriptionService
-from app.utils.subscription_utils import get_display_subscription_crypto_or_plain
 
 
 logger = structlog.get_logger(__name__)
@@ -154,9 +153,6 @@ def _build_subscription_detail_keyboard(sub_id: int, sub=None) -> types.InlineKe
     buttons = []
 
     if not is_inactive:
-        open_link = get_display_subscription_crypto_or_plain(sub) if sub else None
-        if open_link:
-            buttons.append([types.InlineKeyboardButton(text='📲 Открыть в Happ', url=open_link)])
         buttons.append([types.InlineKeyboardButton(text='🔗 Ссылка подключения', callback_data=f'sl:{sub_id}')])
 
     buttons.append([types.InlineKeyboardButton(text='🔄 Продлить', callback_data=f'se:{sub_id}')])
