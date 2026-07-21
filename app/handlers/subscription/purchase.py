@@ -569,18 +569,9 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     hide_subscription_link = settings.should_hide_subscription_link()
 
     if subscription_link and actual_status in ['trial_active', 'paid_active'] and not hide_subscription_link:
-        subscription_link_text = get_display_subscription_crypto_or_plain(subscription)
-        subscription_link_display = (
-            f'<a href="{subscription_link_text}">Ссылка для подключения</a>' if subscription_link_text else ''
-        )
-
-        message += '\n\n' + texts.t(
-            'SUBSCRIPTION_CONNECT_LINK_SECTION',
-            '🔗 {subscription_url}',
-        ).format(subscription_url=subscription_link_display)
         message += '\n\n' + texts.t(
             'SUBSCRIPTION_CONNECT_LINK_PROMPT',
-            '📱 Скопируйте ссылку и добавьте в ваше VPN приложение',
+            '📱 Нажмите кнопку ниже, чтобы подключиться',
         )
 
     await callback.message.edit_text(
@@ -1139,14 +1130,8 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
                     )
                 )
             else:
-                subscription_import_link = texts.t(
-                    'SUBSCRIPTION_IMPORT_LINK_SECTION',
-                    '🔗 <a href="{subscription_url}">Ссылка для подключения</a>',
-                ).format(subscription_url=subscription_link_text)
-
                 trial_success_text = (
                     f'{texts.TRIAL_ACTIVATED}\n\n'
-                    f'{subscription_import_link}\n\n'
                     f'{texts.t("SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT", "📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве")}'
                 )
 
@@ -2707,14 +2692,8 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                     )
                 )
             else:
-                import_link_section = texts.t(
-                    'SUBSCRIPTION_IMPORT_LINK_SECTION',
-                    '🔗 <a href="{subscription_url}">Ссылка для подключения</a>',
-                ).format(subscription_url=subscription_link_text)
-
                 success_text = (
                     f'{texts.SUBSCRIPTION_PURCHASED}\n\n'
-                    f'{import_link_section}\n\n'
                     f'{texts.t("SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT", "📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве")}'
                 )
 
@@ -3465,14 +3444,8 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
                     )
                 )
             else:
-                subscription_import_link = texts.t(
-                    'SUBSCRIPTION_IMPORT_LINK_SECTION',
-                    '🔗 <a href="{subscription_url}">Ссылка для подключения</a>',
-                ).format(subscription_url=subscription_link_text)
-
                 trial_success_text = (
                     f'{texts.TRIAL_ACTIVATED}\n\n'
-                    f'{subscription_import_link}\n\n'
                     f'{texts.t("SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT", "📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве")}'
                 )
 

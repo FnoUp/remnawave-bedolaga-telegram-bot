@@ -264,11 +264,6 @@ async def show_subscription_detail(
         f'📅 До: {end_date}\n'
     )
 
-    if subscription.subscription_url and not settings.should_hide_subscription_link():
-        link_text = get_display_subscription_crypto_or_plain(subscription)
-        if link_text:
-            text += f'\n🔗 <a href="{link_text}">Ссылка для подключения</a>'
-
     keyboard = _build_subscription_detail_keyboard(sub_id, sub=subscription)
 
     if callback.message:

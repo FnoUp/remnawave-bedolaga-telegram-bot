@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import User
-from app.utils.subscription_utils import get_display_subscription_crypto_or_plain
 from app.utils.pricing_utils import (
     format_period_description,
 )
@@ -296,8 +295,6 @@ async def get_subscription_info_text(subscription, texts, db_user, db: AsyncSess
     countries_info = await _get_countries_info(subscription.connected_squads)
     ', '.join([c['name'] for c in countries_info]) if countries_info else 'Нет'
 
-    subscription_url = get_display_subscription_crypto_or_plain(subscription) or 'Генерируется...'
-
     if subscription.is_trial:
         status_text = '🎁 Тестовая'
         type_text = 'Триал'
@@ -398,8 +395,5 @@ async def get_subscription_info_text(subscription, texts, db_user, db: AsyncSess
 
                 info_text += f'\n• {purchase.traffic_gb} ГБ — {time_text}'
                 info_text += f'\n  {bar} {progress_percent:.0f}% | до {expire_date}'
-
-    if subscription_url and subscription_url != 'Генерируется...' and not settings.should_hide_subscription_link():
-        info_text += f'\n\n🔗 <a href="{subscription_url}">Ссылка для подключения</a>'
 
     return info_text

@@ -239,10 +239,8 @@ async def handle_connect_subscription(
                 'SUBSCRIPTION_CONNECT_DEVICE_MESSAGE',
                 """📱 <b>Подключить подписку</b>
 
-🔗 <a href="{subscription_url}">Ссылка для подключения</a>
-
 💡 <b>Выберите ваше устройство</b> для получения подробной инструкции по настройке:""",
-            ).format(subscription_url=get_display_subscription_crypto_or_plain(subscription))
+            )
 
         await callback.message.edit_text(
             device_text,
